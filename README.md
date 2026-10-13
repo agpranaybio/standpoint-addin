@@ -58,35 +58,52 @@ appears under **Home ▸ Standpoint ▸ Diagnostics**.
 6. Press **Copy report** and send the block back. If the clipboard is refused —
    embedded webviews sometimes do — select the text in the box and copy by hand.
 
-## What Chromium already did, before Word is involved
+## What Chromium does — measured, and it is a PERMISSION
 
-Measured on the Linux dev machine, Chrome 149, against this very Pages URL:
+Tested on the Linux dev machine, Chrome 149, against this very Pages URL. The
+page origin was `https://agpranaybio.github.io` throughout; the only thing that
+changed between the two runs was a click.
 
-| page origin | fetch to | result |
-| --- | --- | --- |
-| `https://agpranaybio.github.io` | `http://localhost:8000` | **hung, then timed out** |
-| `https://agpranaybio.github.io` | `http://127.0.0.1:8111` | **hung, then timed out** |
-| `https://agpranaybio.github.io` | itself | HTTP 200 in 25 ms |
-| `http://127.0.0.1:9123` | `http://localhost:8000` | HTTP 200 in 100 ms |
+| | `http://localhost:8000` | `http://127.0.0.1:8111` | the page itself |
+| --- | --- | --- | --- |
+| **before allowing** | hung, timed out | hung, timed out | 25 ms |
+| **after clicking Allow** | **HTTP 200, 96 ms** | **HTTP 200, 162 ms** | 180 ms |
 
-A request-logging server on the target port recorded **nothing** from the
-browser — not even a preflight `OPTIONS`. So the request never left Chrome.
-That rules out CORS and rules out a Private Network Access preflight, both of
-which would have put something in that log; and it is not classic mixed content
-either, because `http://localhost` is "potentially trustworthy" under that spec
-and is supposed to be exempt. What remains is Chromium gating requests from a
-public page into the local network — and in an automated browser with no way to
-show a permission prompt, hanging is what that looks like.
+A request-logging server on the target port makes the cause exact rather than
+guessed:
 
-**So Option A is now in doubt on Windows too, not only on Mac**, which is the
-opposite of what this phase assumed. That makes both runs below worth doing
-rather than one: WebView2 inside Word is not Chrome-with-extensions and may not
-apply the same gate.
+- **Before:** it logged *nothing*. Not one request, not even a preflight
+  `OPTIONS`. The request never left the browser.
+- **After:** a plain `GET`, in 7 ms, carrying
+  `Origin: https://agpranaybio.github.io` and `Sec-Fetch-Site: cross-site` —
+  **and still no preflight.**
 
-**If you see the two localhost rows time out, the pane is working correctly.**
-That is the measurement, not a bug. Watch for a permission prompt from Word or
-the system — if one appears, say so in the report, because a prompt means
-Option A survives with a one-time grant.
+That rules out every explanation except one. It was never CORS (the request
+would have arrived and been refused), never a Private Network Access preflight
+(there is no preflight, before or after), and never mixed content (that has no
+"allow" button, and `http://localhost` is exempt from it anyway). Chrome gates a
+public page's requests into the local network behind a **one-time user
+permission**, like the camera or location prompt. Unanswered, the request simply
+hangs.
+
+**So Option A works in Chromium — at the cost of one click.** That is good news
+and a new product problem at once: until a tester clicks Allow, the pane looks
+broken, and the add-in will have to say so rather than showing an empty result.
+
+### The question that is now live
+
+Can that prompt even appear inside Word? A task pane is an embedded webview, not
+a browser tab — it has no address bar, which is exactly where Chrome puts the
+permission icon. If WebView2 inside Word cannot show the prompt, the request
+hangs forever with no way for anyone to grant it, and Option A is dead on
+Windows despite working in Chrome.
+
+**This is the single most important thing your Windows run answers.** Watch for
+any prompt — in the pane, in Word's frame, or from the system — and say in the
+report whether one appeared and where.
+
+On the Mac, the prior is different again: WebKit may refuse outright with no
+prompt at all.
 
 ## The control experiment, on both machines
 
@@ -107,9 +124,10 @@ the engine's policy and no amount of add-in code will change it. Word's own
 webview console is awkward to reach on Windows and effectively unavailable on
 Mac, so this comparison stands in for a debugger.
 
-Note the Linux result above: a desktop Chrome already blocks this. If a browser
-on your machine blocks it too but Word does **not**, that is the interesting
-finding and it keeps Option A alive.
+Expect the browser to ask permission the first time, as Chrome did here. Grant
+it, and note whether the probes then go green. The comparison that matters is
+whether **Word** gets the same chance to ask: a plain browser has an address bar
+to put the prompt in, and a task pane does not.
 
 ## Files
 
