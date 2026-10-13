@@ -58,10 +58,41 @@ appears under **Home ▸ Standpoint ▸ Diagnostics**.
 6. Press **Copy report** and send the block back. If the clipboard is refused —
    embedded webviews sometimes do — select the text in the box and copy by hand.
 
-## The Mac control experiment
+## What Chromium already did, before Word is involved
 
-If the localhost probes fail on the Mac, do this before concluding anything. In
-**Safari** and then in **Chrome**, open
+Measured on the Linux dev machine, Chrome 149, against this very Pages URL:
+
+| page origin | fetch to | result |
+| --- | --- | --- |
+| `https://agpranaybio.github.io` | `http://localhost:8000` | **hung, then timed out** |
+| `https://agpranaybio.github.io` | `http://127.0.0.1:8111` | **hung, then timed out** |
+| `https://agpranaybio.github.io` | itself | HTTP 200 in 25 ms |
+| `http://127.0.0.1:9123` | `http://localhost:8000` | HTTP 200 in 100 ms |
+
+A request-logging server on the target port recorded **nothing** from the
+browser — not even a preflight `OPTIONS`. So the request never left Chrome.
+That rules out CORS and rules out a Private Network Access preflight, both of
+which would have put something in that log; and it is not classic mixed content
+either, because `http://localhost` is "potentially trustworthy" under that spec
+and is supposed to be exempt. What remains is Chromium gating requests from a
+public page into the local network — and in an automated browser with no way to
+show a permission prompt, hanging is what that looks like.
+
+**So Option A is now in doubt on Windows too, not only on Mac**, which is the
+opposite of what this phase assumed. That makes both runs below worth doing
+rather than one: WebView2 inside Word is not Chrome-with-extensions and may not
+apply the same gate.
+
+**If you see the two localhost rows time out, the pane is working correctly.**
+That is the measurement, not a bug. Watch for a permission prompt from Word or
+the system — if one appears, say so in the report, because a prompt means
+Option A survives with a one-time grant.
+
+## The control experiment, on both machines
+
+Do this on each machine before concluding anything. On the Mac open
+**Safari** and **Chrome**; on Windows open **Edge** and **Chrome**. In each,
+go to
 
 ```
 https://agpranaybio.github.io/standpoint-addin/taskpane.html
@@ -69,12 +100,16 @@ https://agpranaybio.github.io/standpoint-addin/taskpane.html
 
 and read section 2 in each.
 
-Safari is WebKit, Chrome is Chromium — the same two engines Word embeds. If the
-probes fail in Safari and succeed in Chrome, the cause is WebKit's mixed-content
-policy rather than anything about Word, and the add-in must be served over
-`https://localhost` instead. Word's own webview console is awkward to reach on
-Windows and effectively unavailable on Mac, so this comparison stands in for a
-debugger.
+Safari is WebKit and Edge/Chrome are Chromium — the same engines Word embeds.
+This separates "the browser engine blocks it" from "Word blocks it": if a plain
+browser on that machine behaves exactly like the pane inside Word, the cause is
+the engine's policy and no amount of add-in code will change it. Word's own
+webview console is awkward to reach on Windows and effectively unavailable on
+Mac, so this comparison stands in for a debugger.
+
+Note the Linux result above: a desktop Chrome already blocks this. If a browser
+on your machine blocks it too but Word does **not**, that is the interesting
+finding and it keeps Option A alive.
 
 ## Files
 
