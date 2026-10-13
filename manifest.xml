@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standpoint.Bio — Word task pane, Phase 2 connection spike.
+
+  THE XML MANIFEST, NOT THE UNIFIED JSON ONE. The JSON manifest is the newer
+  format but is Windows/M365-first, and sideloading it into Mac desktop Word is
+  not dependable — which is the opposite of what this phase needs, since the Mac
+  run is the one that decides the architecture.
+
+  Permissions is ReadDocument, the LOWEST level that can read a selection. v0
+  never edits the document, and this is what makes that a guarantee the host
+  enforces rather than a promise the code keeps: with ReadDocument, a call that
+  tried to insert text would be refused by Word regardless of what the pane's
+  JavaScript asked for.
+
+  No <AppDomains>. That element governs NAVIGATION inside the pane; a
+  cross-origin fetch is governed by CORS, which the backend already opens with
+  allow_origins=["*"] (replaced by an allowlist plus a pairing token in Phase 3,
+  before any tester sees this).
+-->
+<OfficeApp
+    xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+    xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+    xsi:type="TaskPaneApp">
+
+  <Id>60B9C27A-6825-4DDC-BE1A-700C1C70CB60</Id>
+  <Version>0.1.0.0</Version>
+  <ProviderName>Standpoint.Bio</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Standpoint (spike)"/>
+  <Description DefaultValue="Connection and selection-event diagnostic for the Standpoint.Bio Word add-in."/>
+  <IconUrl DefaultValue="https://agpranaybio.github.io/standpoint-addin/assets/icon-64.png"/>
+  <HighResolutionIconUrl DefaultValue="https://agpranaybio.github.io/standpoint-addin/assets/icon-80.png"/>
+  <SupportUrl DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
+
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://agpranaybio.github.io/standpoint-addin/taskpane.html"/>
+  </DefaultSettings>
+
+  <Permissions>ReadDocument</Permissions>
+
+  <!--
+    VersionOverrides adds the ribbon button. Without it the add-in still loads
+    (older hosts fall back to DefaultSettings above), so this is additive: if a
+    host rejects the overrides it degrades to a working pane rather than to
+    nothing.
+  -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title"/>
+            <Description resid="GetStarted.Description"/>
+            <LearnMoreUrl resid="GetStarted.LearnMoreUrl"/>
+          </GetStarted>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Standpoint.Group">
+                <Label resid="Group.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16"/>
+                  <bt:Image size="32" resid="Icon.32"/>
+                  <bt:Image size="80" resid="Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Standpoint.TaskpaneButton">
+                  <Label resid="Button.Label"/>
+                  <Supertip>
+                    <Title resid="Button.Label"/>
+                    <Description resid="Button.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16"/>
+                    <bt:Image size="32" resid="Icon.32"/>
+                    <bt:Image size="80" resid="Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>Standpoint.Taskpane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="https://agpranaybio.github.io/standpoint-addin/assets/icon-16.png"/>
+        <bt:Image id="Icon.32" DefaultValue="https://agpranaybio.github.io/standpoint-addin/assets/icon-32.png"/>
+        <bt:Image id="Icon.80" DefaultValue="https://agpranaybio.github.io/standpoint-addin/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://agpranaybio.github.io/standpoint-addin/taskpane.html"/>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Group.Label" DefaultValue="Standpoint"/>
+        <bt:String id="Button.Label" DefaultValue="Diagnostics"/>
+        <bt:String id="GetStarted.Title" DefaultValue="Standpoint connection check"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Button.Tooltip" DefaultValue="Check whether this pane can reach Standpoint on this machine, and whether selection events fire while you type."/>
+        <bt:String id="GetStarted.Description" DefaultValue="Open the Standpoint pane from the Home tab, with Standpoint.Bio running on this machine."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
