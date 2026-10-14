@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standpoint.Bio — Word task pane, served BY THE APP over TLS (Option B).
+
+  The sibling of manifest.xml, and the only difference that matters is where the
+  pane comes from: this one loads it from https://127.0.0.1:8443, so the pane and
+  the routes it calls share ONE ORIGIN. manifest.xml loads the same pane from a
+  public web address, which makes every call to this machine cross-origin.
+
+  SIDELOAD BOTH, side by side. Mac Word refused a plaintext localhost request in
+  7 ms, and that request was plaintext AND cross-origin AND aimed at the local
+  machine all at once. Running the identical pane from both origins is what
+  separates those causes — and they have different prices: if plaintext was the
+  only blocker, the pane can stay hosted and a fix is a git push; if reaching the
+  local machine from a public page is blocked, the app has to ship the pane and
+  every fix needs a new installer.
+
+  Its own GUID, so Word treats it as a separate add-in and both can be installed
+  at once. Ribbon label "Local" so they are distinguishable at a glance.
+
+  Permissions is still ReadDocument: the pane cannot write to the document, and
+  that is enforced by Word rather than promised by the code.
+
+  THE CERTIFICATE MUST BE TRUSTED FIRST. An untrusted one does not produce an
+  error message anywhere — the pane is simply blank. See serve_local_https.py,
+  which prints the command.
+-->
+<OfficeApp
+    xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+    xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+    xsi:type="TaskPaneApp">
+
+  <Id>00CB1E47-4421-4C8A-9AA7-0D8C9066B138</Id>
+  <Version>0.1.0.0</Version>
+  <ProviderName>Standpoint.Bio</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Standpoint (local)"/>
+  <Description DefaultValue="Connection and selection-event diagnostic for the Standpoint.Bio Word add-in."/>
+  <IconUrl DefaultValue="https://127.0.0.1:8443/assets/icon-64.png"/>
+  <HighResolutionIconUrl DefaultValue="https://127.0.0.1:8443/assets/icon-80.png"/>
+  <SupportUrl DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
+
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://127.0.0.1:8443/taskpane.html"/>
+  </DefaultSettings>
+
+  <Permissions>ReadDocument</Permissions>
+
+  <!--
+    VersionOverrides adds the ribbon button. Without it the add-in still loads
+    (older hosts fall back to DefaultSettings above), so this is additive: if a
+    host rejects the overrides it degrades to a working pane rather than to
+    nothing.
+  -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title"/>
+            <Description resid="GetStarted.Description"/>
+            <LearnMoreUrl resid="GetStarted.LearnMoreUrl"/>
+          </GetStarted>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Standpoint.Group">
+                <Label resid="Group.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16"/>
+                  <bt:Image size="32" resid="Icon.32"/>
+                  <bt:Image size="80" resid="Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Standpoint.TaskpaneButton">
+                  <Label resid="Button.Label"/>
+                  <Supertip>
+                    <Title resid="Button.Label"/>
+                    <Description resid="Button.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16"/>
+                    <bt:Image size="32" resid="Icon.32"/>
+                    <bt:Image size="80" resid="Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>Standpoint.Taskpane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="https://127.0.0.1:8443/assets/icon-16.png"/>
+        <bt:Image id="Icon.32" DefaultValue="https://127.0.0.1:8443/assets/icon-32.png"/>
+        <bt:Image id="Icon.80" DefaultValue="https://127.0.0.1:8443/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://127.0.0.1:8443/taskpane.html"/>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Group.Label" DefaultValue="Standpoint"/>
+        <bt:String id="Button.Label" DefaultValue="Local"/>
+        <bt:String id="GetStarted.Title" DefaultValue="Standpoint connection check"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Button.Tooltip" DefaultValue="Check whether this pane can reach Standpoint on this machine, and whether selection events fire while you type."/>
+        <bt:String id="GetStarted.Description" DefaultValue="Open the Standpoint pane from the Home tab, with Standpoint.Bio running on this machine."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

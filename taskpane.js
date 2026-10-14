@@ -1,18 +1,22 @@
 /* Standpoint.Bio — Word add-in, Phase 2 connection and events spike.
  *
- * This pane MEASURES; it is not a feature. Two questions decide the add-in's
- * architecture and neither can be answered on the Linux dev machine:
+ * This pane MEASURES; it is not a feature.
  *
- *   1. Can a page served from public HTTPS fetch http://localhost:8000?
- *      Windows Word runs WebView2 (Chromium), Mac Word runs WebKit, and the
- *      two are believed to differ on whether a plain-HTTP localhost request
- *      from an HTTPS page is mixed content. If it is blocked, the pane has to
- *      be served from the backend over https://localhost instead, with a
- *      locally trusted certificate.
+ * QUESTION 2 IS ANSWERED. Mac Word fires paragraph events about 0.9 times a
+ * second while someone types (min 882 ms, max 1584 ms, mean 1131 over 17
+ * intervals), with WordApi 1.1-1.7 available. Word coalesces internally, so
+ * live hints need no debouncing of their own.
  *
- *   2. Do events fire while someone types, and in what pattern? Live hints
- *      need to know the sentence under the cursor changed. Per keystroke, per
- *      word and per paragraph are three different products.
+ * QUESTION 1 IS WHY THIS STILL EXISTS. Mac Word refused
+ * http://localhost:8000 in 7 MILLISECONDS -- against 45 ms for a request that
+ * really happened, so nothing travelled and no prompt appeared. Chrome, by
+ * contrast, HUNG and then worked once the user granted a local-network
+ * permission.
+ *
+ * But that refused request was three things at once: plaintext, aimed at the
+ * local machine, and cross-origin. Only the failure was measured, not which of
+ * the three caused it -- and the fix differs per cause. So the probes below
+ * separate them, and the pane is run from two origins to vary the third.
  *
  * It must also RUN OUTSIDE WORD. A pane that only works inside its host cannot
  * be debugged anywhere else, so with no Office host present everything except
@@ -22,6 +26,10 @@
 'use strict';
 
 var BACKEND = 'http://localhost:8000';
+// Option B's address: the backend serving BOTH this page and its routes over
+// TLS, so the two share an origin. The spike runs it from
+// addin/serve_local_https.py; nothing listens here in an ordinary install.
+var BACKEND_TLS = 'https://127.0.0.1:8443';
 var PROBE_TIMEOUT_MS = 6000;
 
 var state = {
@@ -46,6 +54,28 @@ function row(parent, key, value, cls) {
 }
 
 function clear(id) { var e = document.getElementById(id); e.innerHTML = ''; return e; }
+
+/* Which of the two sideloaded copies is this?
+ *
+ * Both manifests open an identical-looking pane, so without a visible label two
+ * reports can be transposed and the entire comparison is silently inverted --
+ * the one mistake that would make this spike worse than not running it. The
+ * answer is just the page's own origin, which is also the variable under test. */
+function servedFrom() {
+  // Compared against BACKEND_TLS EXACTLY. A looser test ("does the origin
+  // mention localhost") called a dev server on another port the LOCAL copy and
+  // claimed same-origin when probe 3 was still cross-origin -- which would have
+  // mislabelled the one variable this spike is varying.
+  if (location.origin === BACKEND_TLS) {
+    return 'LOCAL copy — served by the app over TLS, SAME ORIGIN as probe 3';
+  }
+  if (location.protocol === 'file:') return 'opened from a file, not served';
+  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(location.origin)) {
+    return 'dev server at ' + location.origin + ' — NOT either sideloaded copy';
+  }
+  return 'HOSTED copy — served from ' + location.host + ', a public origin '
+       + '(every probe below is cross-origin)';
+}
 
 /* ── 1 · environment ──────────────────────────────────────────────────────── */
 //
@@ -105,18 +135,20 @@ function readEnv(officeInfo) {
 
 /* ── 2 · reaching the backend ─────────────────────────────────────────────── */
 //
-// WHY THREE PROBES. From JavaScript, a mixed-content block, a CORS rejection
-// and a refused connection are INDISTINGUISHABLE -- all three arrive as
-// "TypeError: Failed to fetch" with no further detail, by design, so that a
-// page cannot use fetch to port-scan. A single red cross would not say which
-// architecture to choose. Together these three do:
+// WHY SEVERAL PROBES RATHER THAN ONE. From JavaScript, a blocked request, a
+// CORS rejection, a rejected certificate and a refused connection are
+// INDISTINGUISHABLE -- all arrive as a bare TypeError with no further detail,
+// by design, so that a page cannot use fetch to port-scan a machine. One red
+// cross would not say which architecture to choose.
 //
-//   localhost + 127.0.0.1 both fail, control succeeds -> blocked or not running
-//   localhost fails, 127.0.0.1 succeeds               -> a name-based policy
-//   all three fail                                    -> no network at all
+// The TIMING carries information the error text does not. A real request to a
+// real server costs tens of milliseconds; Mac Word's refusal came back in 7,
+// which is too fast for anything to have left the machine. And a request
+// awaiting a permission HANGS rather than failing, which is how Chrome's gate
+// was identified. So both are reported.
 //
-// And the control proves fetch itself works in this webview, so a failure
-// above is specific to the target rather than general.
+// The control proves fetch works in this webview at all, so a failure above is
+// specific to its target rather than general.
 
 function probe(label, url, expect) {
   var started = Date.now();
@@ -155,11 +187,26 @@ function runProbes() {
   var box = clear('net');
   row(box, 'running…', '', 'idle');
 
+  // FOUR probes, because the failure we are chasing had THREE causes at once
+  // and only one of them was measured. Mac Word refused
+  // http://localhost:8000 in 7 ms, and that request was simultaneously
+  // plaintext, aimed at the local machine, and cross-origin. These four
+  // separate them:
+  //
+  //   plaintext http  ..... rows 1 and 2
+  //   secure https    ..... row 3, same destination
+  //   cross-origin    ..... rows 1-3 when this page is served from Pages,
+  //                         row 3 is SAME-origin when served from :8443
+  //   nothing at all  ..... row 4, which must always pass
+  //
+  // So one run of this pane from each of the two origins tells us which rule
+  // actually bit, rather than which workaround happens to survive.
   var jobs = [
-    probe('localhost', BACKEND + '/health', 'the shipping path'),
-    probe('127.0.0.1', 'http://127.0.0.1:8000/health', 'same thing by IP'),
+    probe('http localhost:8000', BACKEND + '/health', 'what Mac Word refused'),
+    probe('http 127.0.0.1:8000', 'http://127.0.0.1:8000/health', 'same thing by IP'),
+    probe('https 127.0.0.1:8443', BACKEND_TLS + '/health', 'Option B'),
     // Same origin as this page, so it needs no CORS and no plaintext: if THIS
-    // fails, the webview has no network and nothing below means anything.
+    // fails, the webview has no network and nothing above means anything.
     probe('control (own origin)', location.origin + location.pathname + '?probe=' + Date.now(), 'must succeed'),
   ];
 
@@ -322,6 +369,9 @@ function registerEvents() {
 function buildReport() {
   var L = [];
   L.push('STANDPOINT WORD ADD-IN — PHASE 2 SPIKE');
+  // First line after the title, so a pasted report can never be attributed to
+  // the wrong copy.
+  L.push(servedFrom());
   L.push('started ' + state.startedAt);
   L.push('');
   L.push('[environment]');
@@ -383,6 +433,8 @@ function start() {
   document.getElementById('refresh').addEventListener('click', function () {
     readSelection(); buildReport();
   });
+
+  document.getElementById('served-from').textContent = '· ' + servedFrom();
 
   readEnv(null);
   runProbes();

@@ -1,16 +1,32 @@
 # Standpoint.Bio — Word task pane (Phase 2 spike)
 
-A diagnostic pane, not a feature. It answers the two questions that decide how
-the real add-in is built, and neither can be answered on a Linux dev machine:
+A diagnostic pane, not a feature. It exists to settle how the real add-in is
+built, and desktop Word is the only place that can happen.
 
-1. **Can a pane served from public HTTPS reach `http://localhost:8000`?**
-   Windows Word runs WebView2 (Chromium), Mac Word runs WebKit, and the two may
-   differ on whether a plain-HTTP localhost request from an HTTPS page counts as
-   mixed content. If it is blocked, the pane has to be served by the backend
-   over `https://localhost` with a locally trusted certificate instead.
-2. **Do events fire while you type, and in what pattern?** Per keystroke, per
-   word and per paragraph are three different products. This decides live hints
-   versus the fallback of refreshing when the cursor reaches a new paragraph.
+**One question is now closed.** Events fire while you type at about **0.9 per
+second** on Mac Word, with `WordApi` 1.1–1.7 available. Word coalesces
+internally, so live hints need no debouncing of their own. Measurements below.
+
+**The open question is how the pane reaches Standpoint.** Mac Word refused
+`http://localhost:8000` in **7 milliseconds** — a refusal, not a question, with
+no prompt and nothing to click. Chrome, on the same URL from the same page,
+*hung* and then worked once a local-network permission was granted. Different
+engines, different rules.
+
+But that refused request was **three things at once** — plaintext, aimed at the
+local machine, and cross-origin — and only the failure was measured, not which
+of the three caused it. They have different fixes, and one of them is much
+cheaper than the other:
+
+- if **plaintext** was the blocker, the pane can stay hosted and a fix is a
+  `git push` every tester gets at once;
+- if **reaching the local machine from a public page** is blocked, the app has
+  to serve the pane itself and every fix needs a new installer.
+
+So the pane now probes all of them, and is run from two origins to vary the
+third. Which rule actually bit is still unknown: for Chrome it was a permission,
+but WebKit may well be refusing the plaintext, and guessing between those costs
+the same trip either way.
 
 It reads your selection and nothing else, and it **cannot write to your
 document** — the manifest asks for `ReadDocument`, the lowest permission that
@@ -31,24 +47,28 @@ this list.
 **macOS**
 
 ```sh
-cp manifest.xml ~/Library/Containers/com.microsoft.Word/Data/Documents/wef/
+cp manifest.xml manifest-local.xml ~/Library/Containers/com.microsoft.Word/Data/Documents/wef/
 ```
 
-Create the `wef` folder if it is not there, then restart Word. The add-in
-appears under **Home ▸ Standpoint ▸ Diagnostics**.
+Create the `wef` folder if it is not there, then restart Word. Both appear under
+**Home ▸ Standpoint** — as **Diagnostics** (hosted) and **Local** (served by the
+app). Copy both: running the same pane from the two origins is what separates
+the causes.
 
 **Windows**
 
-1. Put `manifest.xml` in a folder and share that folder (right-click ▸
+1. Put **both** manifests in a folder and share it (right-click ▸
    *Properties ▸ Sharing ▸ Share*).
 2. Word ▸ **File ▸ Options ▸ Trust Center ▸ Trust Center Settings ▸ Trusted
    Add-in Catalogs**. Paste the share path (`\\MACHINE\folder`), click **Add
    catalog**, tick **Show in Menu**, OK.
-3. Restart Word. **Insert ▸ My Add-ins ▸ Shared Folder ▸ Standpoint (spike)**.
+3. Restart Word. **Insert ▸ My Add-ins ▸ Shared Folder** — both
+   *Standpoint (spike)* and *Standpoint (local)* should be listed.
 
 ## Running it
 
-1. Start Standpoint, so the backend is listening on `127.0.0.1:8000`.
+1. Start Standpoint, so the backend is listening on `127.0.0.1:8000`, and
+   start `serve_local_https.py` (below) so `127.0.0.1:8443` answers too.
 2. Open a document with a few paragraphs of real prose.
 3. Open the pane. Sections 1 and 2 fill in by themselves.
 4. **Select a sentence.** Section 3 should show its text.
@@ -58,86 +78,140 @@ appears under **Home ▸ Standpoint ▸ Diagnostics**.
 6. Press **Copy report** and send the block back. If the clipboard is refused —
    embedded webviews sometimes do — select the text in the box and copy by hand.
 
-## What Chromium does — measured, and it is a PERMISSION
+## What is already measured
 
-Tested on the Linux dev machine, Chrome 149, against this very Pages URL. The
-page origin was `https://agpranaybio.github.io` throughout; the only thing that
-changed between the two runs was a click.
+### Mac Word refused, in 7 milliseconds
 
-| | `http://localhost:8000` | `http://127.0.0.1:8111` | the page itself |
+| | Mac Word (WebKit) | Chrome 149 (Chromium) |
+| --- | --- | --- |
+| `http://localhost:8000` | `TypeError: Load failed` in **7 ms** | hung, then **worked after Allow** |
+| `http://127.0.0.1:8000` | `TypeError: Load failed` in **7 ms** | same |
+| the page itself | HTTP 200 in 45 ms | HTTP 200 in 25 ms |
+
+**7 ms is a refusal, not a question.** The one request that really happened took
+45 ms, so nothing travelled — a rule was checked and that was that. No prompt
+appeared. Chrome, by contrast, *hung*: it was waiting on a local-network
+permission, and granting it made the call work. Two engines, two behaviours, and
+the Mac one has nothing to click.
+
+The user agent confirms the engine: `AppleWebKit/605.1.15` with no Chrome or
+Safari token — a bare embedded WKWebView.
+
+### Events: answered, and the answer is good
+
+Both event APIs registered, `WordApi` **1.1 through 1.7**. While typing: min
+882 ms, max 1584 ms, **mean 1131 ms over 17 intervals — about 0.9 events per
+second**. Word coalesces internally, so live hints need no debouncing of their
+own. Reading the selection works too (`0 chars` with *no error* means the whole
+chain succeeded and nothing was selected).
+
+That criterion is closed. Everything below is about the connection.
+
+### What has NOT been established
+
+The refused request was **three things at once**, and only the failure was
+measured:
+
+| | plaintext `http` | public page → local machine | cross-origin |
 | --- | --- | --- | --- |
-| **before allowing** | hung, timed out | hung, timed out | 25 ms |
-| **after clicking Allow** | **HTTP 200, 96 ms** | **HTTP 200, 162 ms** | 180 ms |
+| what was tested | ✗ | ✗ | ✗ |
+| hosted pane → `https://127.0.0.1:8443` | fixed | **still there** | **still there** |
+| locally served pane | fixed | fixed | fixed |
 
-A request-logging server on the target port makes the cause exact rather than
-guessed:
+The three have different prices. If plaintext was the only blocker, the pane can
+stay hosted and **a fix is a `git push`** that every tester gets at once. If
+reaching the local machine from a public page is blocked, the app must ship the
+pane and **every fix needs a new installer**. And there is direct evidence the
+middle column is real: Chrome's prompt said *"access devices on your local
+network"* — about the destination, not the scheme.
 
-- **Before:** it logged *nothing*. Not one request, not even a preflight
-  `OPTIONS`. The request never left the browser.
-- **After:** a plain `GET`, in 7 ms, carrying
-  `Origin: https://agpranaybio.github.io` and `Sec-Fetch-Site: cross-site` —
-  **and still no preflight.**
+So the next run tests both, in one sitting.
 
-That rules out every explanation except one. It was never CORS (the request
-would have arrived and been refused), never a Private Network Access preflight
-(there is no preflight, before or after), and never mixed content (that has no
-"allow" button, and `http://localhost` is exempt from it anyway). Chrome gates a
-public page's requests into the local network behind a **one-time user
-permission**, like the camera or location prompt. Unanswered, the request simply
-hangs.
+## The run: two manifests, side by side
 
-**So Option A works in Chromium — at the cost of one click.** That is good news
-and a new product problem at once: until a tester clicks Allow, the pane looks
-broken, and the add-in will have to say so rather than showing an empty result.
+### 1. Start the TLS server
 
-### The question that is now live
+```sh
+python addin/serve_local_https.py
+```
 
-Can that prompt even appear inside Word? A task pane is an embedded webview, not
-a browser tab — it has no address bar, which is exactly where Chrome puts the
-permission icon. If WebView2 inside Word cannot show the prompt, the request
-hangs forever with no way for anyone to grant it, and Option A is dead on
-Windows despite working in Chrome.
+It makes a self-signed certificate covering `localhost` **and** `127.0.0.1`,
+serves the pane and a `/health` route on `https://127.0.0.1:8443`, and prints
+the command to trust it — **and the command to remove it again afterwards.**
+Run the removal when you are done; a spike has no business leaving a trusted
+root on a machine.
 
-**This is the single most important thing your Windows run answers.** Watch for
-any prompt — in the pane, in Word's frame, or from the system — and say in the
-report whether one appeared and where.
+**Trust the certificate before opening the pane.** An untrusted one does not
+produce an error anywhere — the pane is simply blank.
 
-On the Mac, the prior is different again: WebKit may refuse outright with no
-prompt at all.
+While you are there, note **how many steps the trust command takes and whether
+it asks for your password.** That number is this option's product cost and is
+worth writing down even if everything works.
+
+### 2. Sideload both manifests
+
+`manifest.xml` (hosted, ribbon button **Diagnostics**) and `manifest-local.xml`
+(served by the script, ribbon button **Local**). They carry different GUIDs, so
+Word installs both and you can switch between them.
+
+Each pane says at the top which copy it is, and so does the first line of its
+report — the panes are identical otherwise, and two transposed reports would
+invert the entire conclusion.
+
+### 3. Read the server's log, not just the pane
+
+The log is the instrument, because the pane cannot tell these apart — all three
+arrive as a bare `TypeError`:
+
+| in the server's log | what it means |
+| --- | --- |
+| `<- GET /health` | the request got through |
+| `!! TLS HANDSHAKE REFUSED` | the certificate is not trusted — trust it, re-run |
+| **nothing at all** | the browser never sent it: a **policy block** |
+
+That last row is the finding this spike exists for. The middle one is a setup
+problem wearing the same clothes, which is why it is called out separately.
+
+### 4. What each outcome selects
+
+| hosted pane → `https://127.0.0.1:8443` | local pane | conclusion |
+| --- | --- | --- |
+| works | works | plaintext was the only blocker — **keep the hosted pane**, push-to-update survives |
+| fails | works | public→local is blocked too — **the app must serve the pane** |
+| fails | fails | check the log: a refused certificate is a setup problem; nothing logged at all puts Option B in doubt too |
+
+Send both reports and the server's log.
+
+Then the same two manifests on Windows, in one trip. The earlier Windows run on
+the hosted pane alone is **not** worth doing: it could only report whether
+WebView2 shows a permission prompt, and that no longer selects anything.
 
 ## The control experiment, on both machines
 
-Do this on each machine before concluding anything. On the Mac open
-**Safari** and **Chrome**; on Windows open **Edge** and **Chrome**. In each,
-go to
+Optional, and only if a result is confusing. On the Mac open **Safari** and
+**Chrome**; on Windows open **Edge** and **Chrome**, and visit
 
 ```
 https://agpranaybio.github.io/standpoint-addin/taskpane.html
 ```
 
-and read section 2 in each.
-
 Safari is WebKit and Edge/Chrome are Chromium — the same engines Word embeds.
-This separates "the browser engine blocks it" from "Word blocks it": if a plain
-browser on that machine behaves exactly like the pane inside Word, the cause is
-the engine's policy and no amount of add-in code will change it. Word's own
+If a plain browser on that machine behaves exactly like the pane inside Word,
+the cause is the engine's policy and no add-in code will change it. Word's own
 webview console is awkward to reach on Windows and effectively unavailable on
-Mac, so this comparison stands in for a debugger.
-
-Expect the browser to ask permission the first time, as Chrome did here. Grant
-it, and note whether the probes then go green. The comparison that matters is
-whether **Word** gets the same chance to ask: a plain browser has an address bar
-to put the prompt in, and a task pane does not.
+Mac, so this stands in for a debugger.
 
 ## Files
 
 | | |
 | --- | --- |
-| `manifest.xml` | The XML manifest. Not the unified JSON one: that is Windows/M365-first and sideloading it into Mac desktop Word is not dependable. |
+| `manifest.xml` | Loads the pane from GitHub Pages. The XML manifest, not the unified JSON one: that is Windows/M365-first and sideloading it into Mac desktop Word is not dependable. |
+| `manifest-local.xml` | Loads the identical pane from `https://127.0.0.1:8443`. Its own GUID, so both install at once. |
+| `serve_local_https.py` | The TLS spike server: certificate, pane, `/health`, and a log that tells a policy block apart from a refused certificate. |
 | `taskpane.html` | One screen, a row per check. |
 | `taskpane.js` | The checks. No framework and no build step, so what is sideloaded is what is in git. |
 | `assets/icon-*.png` | Ribbon icons. |
-| `check_manifest.py` | Run before publishing: `python check_manifest.py`. Catches the mistakes whose only symptom in Word is a pane that silently never appears. |
+| `check_manifest.py` | Run before publishing: `python check_manifest.py`. Checks both manifests and catches the mistakes whose only symptom in Word is a pane that silently never appears — including the two sharing a GUID, which would install only one. |
 
 ## Hosting
 
