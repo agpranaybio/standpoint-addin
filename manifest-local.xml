@@ -1,29 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Standpoint.Bio — Word task pane, served BY THE APP over TLS (Option B).
+  Standpoint.Bio — the Word task pane. THE REAL MANIFEST.
 
-  The sibling of manifest.xml, and the only difference that matters is where the
-  pane comes from: this one loads it from https://127.0.0.1:8443, so the pane and
-  the routes it calls share ONE ORIGIN. manifest.xml loads the same pane from a
-  public web address, which makes every call to this machine cross-origin.
+  Loads the pane from the app itself: Standpoint serves these files over TLS on
+  https://127.0.0.1:8443/addin/, and answers the pane's requests from that same
+  address. Same origin for both, which is the whole design.
 
-  SIDELOAD BOTH, side by side. Mac Word refused a plaintext localhost request in
-  7 ms, and that request was plaintext AND cross-origin AND aimed at the local
-  machine all at once. Running the identical pane from both origins is what
-  separates those causes — and they have different prices: if plaintext was the
-  only blocker, the pane can stay hosted and a fix is a git push; if reaching the
-  local machine from a public page is blocked, the app has to ship the pane and
-  every fix needs a new installer.
+  WHY, measured on Mac Word: a pane served from a public HTTPS address cannot
+  reach this machine. Plaintext is refused in 2-5 ms, and a secure call from a
+  hosted pane failed too (45 ms), while the identical call from an app-served
+  pane answered in 19 ms. manifest.xml, the hosted sibling, is kept only for the
+  browser control experiment; it does not work in Word.
 
-  Its own GUID, so Word treats it as a separate add-in and both can be installed
-  at once. Ribbon label "Local" so they are distinguishable at a glance.
+  Same origin also removed the security machinery the old plan had: no pairing
+  code and no token, because the pane is not a stranger. It is what let the
+  backend drop allow_origins=["*"], which until then let any website the
+  scientist visited read their whole library.
 
-  Permissions is still ReadDocument: the pane cannot write to the document, and
-  that is enforced by Word rather than promised by the code.
+  Permissions is ReadDocument, the lowest level that can read a selection: the
+  pane cannot write to the document, and Word enforces that rather than the code
+  promising it.
 
-  THE CERTIFICATE MUST BE TRUSTED FIRST. An untrusted one does not produce an
-  error message anywhere — the pane is simply blank. See serve_local_https.py,
-  which prints the command.
+  THE CERTIFICATE MUST BE TRUSTED FIRST. Standpoint generates it per machine
+  into its data dir (services/addin_server.py); the private key never leaves the
+  machine and is never shipped. An untrusted certificate produces NO error
+  message anywhere — the pane is simply blank. See README.md for the one
+  command, and Phase 5 for the button that will replace it.
 -->
 <OfficeApp
     xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
@@ -38,8 +40,8 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Standpoint (local)"/>
   <Description DefaultValue="Connection and selection-event diagnostic for the Standpoint.Bio Word add-in."/>
-  <IconUrl DefaultValue="https://127.0.0.1:8443/assets/icon-64.png"/>
-  <HighResolutionIconUrl DefaultValue="https://127.0.0.1:8443/assets/icon-80.png"/>
+  <IconUrl DefaultValue="https://127.0.0.1:8443/addin/assets/icon-64.png"/>
+  <HighResolutionIconUrl DefaultValue="https://127.0.0.1:8443/addin/assets/icon-80.png"/>
   <SupportUrl DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
 
   <Hosts>
@@ -47,7 +49,7 @@
   </Hosts>
 
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://127.0.0.1:8443/taskpane.html"/>
+    <SourceLocation DefaultValue="https://127.0.0.1:8443/addin/taskpane.html"/>
   </DefaultSettings>
 
   <Permissions>ReadDocument</Permissions>
@@ -101,12 +103,12 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16" DefaultValue="https://127.0.0.1:8443/assets/icon-16.png"/>
-        <bt:Image id="Icon.32" DefaultValue="https://127.0.0.1:8443/assets/icon-32.png"/>
-        <bt:Image id="Icon.80" DefaultValue="https://127.0.0.1:8443/assets/icon-80.png"/>
+        <bt:Image id="Icon.16" DefaultValue="https://127.0.0.1:8443/addin/assets/icon-16.png"/>
+        <bt:Image id="Icon.32" DefaultValue="https://127.0.0.1:8443/addin/assets/icon-32.png"/>
+        <bt:Image id="Icon.80" DefaultValue="https://127.0.0.1:8443/addin/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://127.0.0.1:8443/taskpane.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://127.0.0.1:8443/addin/taskpane.html"/>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/agpranaybio/standpoint-addin"/>
       </bt:Urls>
       <bt:ShortStrings>

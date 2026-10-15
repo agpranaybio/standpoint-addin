@@ -25,10 +25,17 @@
 
 'use strict';
 
+// WHERE THE BACKEND IS: wherever this page came from.
+//
+// The app serves this pane itself, so its own origin is the backend's origin
+// and every call is same-origin. That is the whole architecture in one line --
+// no host to configure, no CORS entry, no pairing code, and nothing to go stale
+// if a port ever changes.
+//
+// The fallbacks exist only for the spike's two-origin comparison, which is what
+// established that a hosted pane cannot reach this machine at all.
+var SAME_ORIGIN = location.origin;
 var BACKEND = 'http://localhost:8000';
-// Option B's address: the backend serving BOTH this page and its routes over
-// TLS, so the two share an origin. The spike runs it from
-// addin/serve_local_https.py; nothing listens here in an ordinary install.
 var BACKEND_TLS = 'https://127.0.0.1:8443';
 var PROBE_TIMEOUT_MS = 6000;
 
@@ -67,14 +74,19 @@ function servedFrom() {
   // claimed same-origin when probe 3 was still cross-origin -- which would have
   // mislabelled the one variable this spike is varying.
   if (location.origin === BACKEND_TLS) {
-    return 'LOCAL copy — served by the app over TLS, SAME ORIGIN as probe 3';
+    return 'served by Standpoint over TLS — this is what Word loads';
   }
   if (location.protocol === 'file:') return 'opened from a file, not served';
   if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(location.origin)) {
-    return 'dev server at ' + location.origin + ' — NOT either sideloaded copy';
+    // The app serves the pane on its plain door too, which is how it gets
+    // opened in a real browser where devtools exist. Word cannot use this one:
+    // Office refuses a plain-http SourceLocation.
+    return 'served by Standpoint at ' + location.origin + ' — for debugging, '
+         + 'not the address Word uses';
   }
-  return 'HOSTED copy — served from ' + location.host + ', a public origin '
-       + '(every probe below is cross-origin)';
+  return 'HOSTED copy — served from ' + location.host + ', a public origin. '
+       + 'Measured on Mac Word: a pane served this way cannot reach this '
+       + 'machine at all.';
 }
 
 /* ── 1 · environment ──────────────────────────────────────────────────────── */
@@ -183,6 +195,26 @@ function probe(label, url, expect) {
   });
 }
 
+/* The one line a scientist reads.
+ *
+ * Deliberately says WHICH failure it is. "Can't reach Standpoint" and "the
+ * certificate was refused" need different actions from the reader, and the
+ * whole lesson of this phase is that a rejected certificate produces no error
+ * text anywhere -- it just looks broken. If the pane rendered at all the
+ * certificate was accepted, so a failure here is the app not running. */
+function setStatus(probe) {
+  var el = document.getElementById('status');
+  if (!el) return;
+  if (probe && probe.ok) {
+    el.className = 'status status--ok';
+    el.textContent = 'Connected to Standpoint';
+  } else {
+    el.className = 'status status--bad';
+    el.textContent = 'Standpoint isn\u2019t running on this computer. '
+                   + 'Open it, then reload this pane.';
+  }
+}
+
 function runProbes() {
   var box = clear('net');
   row(box, 'running…', '', 'idle');
@@ -202,6 +234,9 @@ function runProbes() {
   // So one run of this pane from each of the two origins tells us which rule
   // actually bit, rather than which workaround happens to survive.
   var jobs = [
+    // THE ONE THAT DECIDES THE STATUS LINE. Same-origin, so it is subject to
+    // none of the rules the others exist to test.
+    probe('this app (same origin)', SAME_ORIGIN + '/health', 'the shipping path'),
     probe('http localhost:8000', BACKEND + '/health', 'what Mac Word refused'),
     probe('http 127.0.0.1:8000', 'http://127.0.0.1:8000/health', 'same thing by IP'),
     probe('https 127.0.0.1:8443', BACKEND_TLS + '/health', 'Option B'),
@@ -212,6 +247,7 @@ function runProbes() {
 
   return Promise.all(jobs).then(function (results) {
     state.probes = results;
+    setStatus(results[0]);
     var b = clear('net');
     results.forEach(function (r) {
       var good = r.ok;

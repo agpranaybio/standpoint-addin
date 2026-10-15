@@ -74,8 +74,21 @@ def check_one(manifest: Path) -> list[str]:
             print(f"  FAIL  {msg}")
 
     print(f"\n{manifest.name}")
+    raw = manifest.read_text(encoding="utf-8")
+
+    # NAMED, because this has now bitten twice and the parser's own message is
+    # "not well-formed (invalid token): line 27, column 21", which says nothing
+    # about the cause. XML forbids "--" ANYWHERE inside a comment, so writing a
+    # dash the way one would in prose produces a manifest Word rejects in
+    # silence. Checked before parsing, so the useful message wins.
+    i, j = raw.find("<!--"), raw.find("-->")
+    if i >= 0 and j > i and "--" in raw[i + 4:j]:
+        print("  FAIL  the comment contains '--', which XML forbids inside a "
+              "comment. Use an em dash. Word rejects the manifest silently.")
+        return [f"{manifest.name}: '--' in comment"]
+
     try:
-        root = ET.fromstring(manifest.read_text(encoding="utf-8"))
+        root = ET.fromstring(raw)
     except ET.ParseError as exc:
         print(f"  FAIL  not well-formed XML: {exc}")
         return [f"{manifest.name}: malformed"]
