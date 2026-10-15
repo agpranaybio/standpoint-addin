@@ -172,19 +172,41 @@ arrive as a bare `TypeError`:
 That last row is the finding this spike exists for. The middle one is a setup
 problem wearing the same clothes, which is why it is called out separately.
 
-### 4. What each outcome selects
+### 4. The result, Mac, Oct 14 2026
 
-| hosted pane → `https://127.0.0.1:8443` | local pane | conclusion |
-| --- | --- | --- |
-| works | works | plaintext was the only blocker — **keep the hosted pane**, push-to-update survives |
-| fails | works | public→local is blocked too — **the app must serve the pane** |
-| fails | fails | check the log: a refused certificate is a setup problem; nothing logged at all puts Option B in doubt too |
+Both panes, one sitting, same machine:
 
-Send both reports and the server's log.
+| pane served from | `http://…:8000` | `https://127.0.0.1:8443` | own origin |
+| --- | --- | --- | --- |
+| `https://127.0.0.1:8443` (**Local**) | FAILED 2 ms | **OK 200 · 19 ms** | OK 200 · 24 ms |
+| `agpranaybio.github.io` (**Diagnostics**) | FAILED 5 ms | **FAILED 45 ms** | OK 200 · 102 ms |
 
-Then the same two manifests on Windows, in one trip. The earlier Windows run on
-the hosted pane alone is **not** worth doing: it could only report whether
-WebView2 shows a permission prompt, and that no longer selects anything.
+**Option B works; Option A is dead on both counts.** Plaintext is refused in
+2–5 ms — faster than the 45 ms a real request costs, so nothing travelled. And
+the hosted pane's *secure* call failed where the local pane's identical call
+succeeded in 19 ms, so it is not only plaintext that is blocked: a public origin
+cannot reach this machine either.
+
+Trusting the certificate took **one step**. WKWebView accepted it without
+complaint — the pane loaded, and `/health` answered same-origin.
+
+**Where the evidence stops.** The server log for the hosted run was not
+captured; the excerpt available starts 115 s later and contains only the local
+pane's own requests. The server **was** running, which rules out
+connection-refused. What stays unconfirmed is whether the hosted request reached
+the server and was blocked on the response, or never left the browser — and no
+response header remains to try, since `Access-Control-Allow-Origin: *` and
+`Access-Control-Allow-Private-Network: true` were already being sent. **Inferred
+from timing, not from a logged absence.** Recorded this way because the first
+conclusion drawn here was nearly written down from a log that did not cover the
+window.
+
+**Consequences.** The pane ships inside the app; a pane fix needs a new
+installer rather than a `git push`, and this repo stops being the delivery
+route. In exchange the pane is same-origin with the API, so there is no CORS
+surface at all.
+
+**Still owed:** the same two manifests on Windows.
 
 ## The control experiment, on both machines
 
