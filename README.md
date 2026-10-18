@@ -45,6 +45,29 @@ in Chrome, before and after:
 | `/papers/23` | 200, 1880 bytes | blocked |
 | `/project/tree?hypothesis_id=2` | 200, **21320 bytes** | blocked |
 
+## What is verified, and what is not
+
+**The packaged code path works** — exercised in a real packaged build (on
+Linux, which uses the same asar archive and the same custom-scheme machinery as
+the Mac build):
+
+| | |
+| --- | --- |
+| window origin | `standpoint-app://app` |
+| secure context | true |
+| renderer read out of `app.asar` | React rendered, 3 stylesheets, real UI |
+| API from that origin, through the guard | `GET` 200, `POST` 200, **0 refusals** |
+
+That closes the "never verified in a packaged build" risk for the scheme, the
+asar read and the allowlist.
+
+**What is Mac-only and still unverified:** whether trusting the certificate in
+the login keychain satisfies WKWebView inside Word. It needs macOS, a GUI
+session and a human at a password prompt, so no CI runner and no Linux machine
+can answer it. `verify_mac_trust.sh` walks it end to end — including pressing
+Cancel once on purpose, and asking the *system* whether it trusts the
+certificate rather than asking our own record.
+
 ## Installing it
 
 1. **Start Standpoint.** The TLS listener and its certificate come up with the
