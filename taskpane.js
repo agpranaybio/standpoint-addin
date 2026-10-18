@@ -29,6 +29,7 @@ var ADDIN_CONTRACT = 1;
 var PAUSE_MS = 1500;
 
 var state = {
+  browserMode: false,        // no Word host: the textarea drives the pane
   standpointId: null,
   live: true,
   cache: new Map(),
@@ -385,6 +386,13 @@ function fallbackCopy(text, done) {
 /* ── live hints ───────────────────────────────────────────────────────────── */
 
 function currentText() {
+  // BROWSER TEST MODE: the textarea stands in for the document, so Find
+  // evidence, live hints, the cards and every state can be exercised without
+  // Word — on a machine that has none.
+  if (state.browserMode) {
+    var box = byId('browser-text');
+    return Promise.resolve(box ? box.value.trim() : '');
+  }
   if (typeof Word === 'undefined') return Promise.resolve('');
   return Word.run(function (ctx) {
     var sel = ctx.document.getSelection();
@@ -555,6 +563,68 @@ function addPaper(result, button) {
   });
 }
 
+/* ── browser test mode ────────────────────────────────────────────────────── */
+
+function enableBrowserMode(why) {
+  state.browserMode = true;
+  log('browser test mode (' + why + ')');
+  var wrap = byId('browser-mode');
+  if (wrap) wrap.hidden = false;
+  var box = byId('browser-text');
+  if (box) {
+    // The same pause detector Word drives, so live hints behave identically.
+    box.addEventListener('input', schedulePause);
+    box.focus();
+  }
+  var sub = document.querySelector('.sub');
+  if (sub) sub.textContent =
+    'Browser test mode — the box below stands in for your Word document.';
+  buildStateSwitch();
+}
+
+/* Every state, on demand. The alternative is contriving a half-built index or
+ * a stale manifest to look at a message, which means nobody looks. */
+var DEBUG_STATES = {
+  indexing: function () { stateIndexing(46); clear(byId('results')); },
+  'no-matches': function () {
+    clear(byId('results'));
+    stateNoMatches(function () { setState('ok', 'weaker results would load here'); });
+  },
+  'too-old': function () {
+    setState('warn', 'This panel needs a newer Standpoint. Update the app, '
+      + 'then remove and re-add the add-in in Word.');
+  },
+  offline: function () { handleError(new Error('Failed to fetch')); },
+  'no-model': function () {
+    setState('warn', 'Search is unavailable: this build has no embedding model.');
+  },
+  ready: function () { setState('wait', 'Press Find evidence, or start typing.'); },
+};
+
+function buildStateSwitch() {
+  var row = byId('state-switch');
+  if (!row) return;
+  clear(row);
+  row.appendChild(el('span', 'hint', 'Force a state:'));
+  Object.keys(DEBUG_STATES).forEach(function (name) {
+    var b = el('button', null, name);
+    b.addEventListener('click', function () { DEBUG_STATES[name](); });
+    row.appendChild(b);
+  });
+}
+
+/* ?state=indexing — so a state can be linked to, screenshotted and reported
+ * without anyone having to describe the clicks that produced it. */
+function applyStateFromUrl() {
+  var m = /[?&]state=([a-z-]+)/.exec(location.search);
+  if (m && DEBUG_STATES[m[1]]) {
+    setTimeout(DEBUG_STATES[m[1]], 300);   // after startup settles
+    log('forced state: ' + m[1]);
+    return true;
+  }
+  return false;
+}
+
 /* ── startup ──────────────────────────────────────────────────────────────── */
 
 function loadStandpoints() {
@@ -630,6 +700,8 @@ function start() {
   });
 
   renderLiterature();
+  buildStateSwitch();
+  var forced = applyStateFromUrl();
 
   checkContract()
     .then(function (ok) { return ok ? loadStandpoints() : null; })
@@ -642,16 +714,21 @@ function start() {
         setState('warn', 'Search is unavailable: this build has no embedding model.');
         return;
       }
-      setState('wait', 'Press Find evidence, or start typing.');
+      if (!forced) setState('wait', 'Press Find evidence, or start typing.');
     })
-    .catch(handleError);
+    .catch(function (err) { if (!forced) handleError(err); });
 
   if (typeof Office === 'undefined' || !Office.onReady) {
-    log('no Office host — running outside Word');
+    enableBrowserMode('Office.js did not load');
     return;
   }
   Office.onReady(function (info) {
-    if (!info.host) { log('onReady with no host'); return; }
+    if (!info.host) {
+      // Office.js loads and even calls onReady outside Office, reporting a
+      // null host. That is the browser case, not a broken Word.
+      enableBrowserMode('no Word host');
+      return;
+    }
     log('Word on ' + info.platform);
     try {
       Office.context.document.addHandlerAsync(

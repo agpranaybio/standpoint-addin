@@ -92,6 +92,92 @@ certificate rather than asking our own record.
 Steps 2 and 3 are what the "Install Word add-in" button will do in one flow —
 see Phase 5 in the add-in plan.
 
+## Testing it on Linux, without Word
+
+Desktop Word does not exist on Linux, so the pane has two ways to be exercised
+here.
+
+### Browser test mode — no Word at all
+
+Open the pane in Chrome:
+
+```
+http://127.0.0.1:8000/addin/taskpane.html
+```
+
+With no Word host, a **textarea appears and stands in for the document**. Find
+evidence, live hints (type and pause), the cards, "+N more", the labels, the
+literature flow and every state all behave exactly as they do in Word, because
+they run the same code paths — `currentText()` simply reads the box instead of
+the selection.
+
+Plain `http` is fine for this: the app serves the pane on both doors, and a
+browser needs no TLS to talk to itself. TLS is Word's requirement, not Chrome's.
+
+### Forcing a state
+
+Every state has a button under **Diagnostics**, and a URL:
+
+```
+…/addin/taskpane.html?state=indexing      # "Reading your library… 46%"
+…/addin/taskpane.html?state=no-matches    # + "Show weaker results"
+…/addin/taskpane.html?state=too-old       # contract mismatch
+…/addin/taskpane.html?state=offline       # Standpoint not running
+…/addin/taskpane.html?state=no-model      # a build with no embedding model
+…/addin/taskpane.html?state=ready
+```
+
+States nobody can look at are states nobody checks — contriving a half-built
+index to see one message is how they end up never reviewed.
+
+### Trusting the dev certificate in Chrome on Linux
+
+Only needed for the **https** door (`:8443`), which is what Word on the web
+loads. Chrome on Linux uses its own NSS store, not the system one:
+
+```sh
+certutil -d sql:$HOME/.pki/nssdb -A -t "C,," \
+  -n "Standpoint.Bio dev" -i backend/addin-cert.pem
+```
+
+`-t "C,,"` trusts it for TLS servers only. The certificate is a CA with
+`localhost`, `127.0.0.1` and `::1` in its SAN, generated per machine; the
+private key never leaves it. Needs `libnss3-tools` (`certutil` is already on
+this machine). **Restart Chrome afterwards.** To undo:
+
+```sh
+certutil -d sql:$HOME/.pki/nssdb -D -n "Standpoint.Bio dev"
+```
+
+Check it took:
+
+```sh
+curl https://127.0.0.1:8443/health      # no -k; a 200 means the system trusts it
+```
+
+### Word on the web
+
+Word on the web runs in Chrome on Linux, and is the only Word available here.
+`manifest-local.xml` is an XML manifest with an `https` SourceLocation, which is
+the shape Word on the web accepts for sideloading.
+
+1. Trust the certificate (above) and **restart Chrome**.
+2. Visit `https://127.0.0.1:8443/addin/taskpane.html` once and confirm it loads
+   with no warning. If Chrome still objects, Word on the web will fail the same
+   way and the pane will be blank.
+3. In Word on the web: **Home ▸ Add-ins ▸ More Add-ins ▸ My Add-ins ▸ Upload My
+   Add-in**, and choose `addin/manifest-local.xml`.
+4. The pane appears under **Home ▸ Standpoint**.
+
+**Not verified end to end, and worth saying so.** Step 3 needs a Microsoft
+account, which is yours, not mine — everything up to it is checked here (the
+manifest validates, the TLS door serves the pane, the certificate covers both
+names). Two things to expect if it does not work: Word on the web may refuse a
+private-IP SourceLocation even over https, and its iframe sandbox differs from
+desktop Word's. If it refuses, that is a fact about Word on the web, **not**
+about the Mac desktop path measured in Phase 2 — the browser test mode above
+still exercises everything except Word's own event delivery.
+
 ## Reading it
 
 The pane leads with one line: **Connected to Standpoint**, or that Standpoint

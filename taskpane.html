@@ -34,6 +34,13 @@
   h1 { font-size: 13px; margin: 0; letter-spacing: .01em; font-weight: 600; }
   .sub { color: var(--ink-dim); font-size: 11px; margin: 0 0 10px; }
 
+  textarea {
+    font: inherit; font-size: 12.5px; color: var(--ink); width: 100%;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 5px; padding: 7px; resize: vertical; line-height: 1.45;
+  }
+  label.field em { font-style: normal; color: var(--warn); }
+
   select, input[type=text] {
     font: inherit; font-size: 12px; color: var(--ink);
     background: var(--card); border: 1px solid var(--line);
@@ -131,6 +138,18 @@
   <select id="standpoint"></select>
 </label>
 
+<!-- BROWSER TEST MODE. Hidden inside Word, where the document IS the input.
+     Shown when Office.js reports no host, so the whole pane — search, cards,
+     every state — can be exercised in an ordinary browser with devtools, on a
+     machine that has no Word at all. -->
+<div id="browser-mode" hidden>
+  <label class="field">
+    <span>Sentence to search for <em>(browser test mode — no Word host)</em></span>
+    <textarea id="browser-text" rows="3"
+      placeholder="Type or paste a sentence, as if you were drafting it in Word…"></textarea>
+  </label>
+</div>
+
 <div class="row">
   <button id="find" class="primary">Find evidence</button>
   <label class="toggle">
@@ -150,6 +169,10 @@
 
 <details class="diag">
   <summary>Diagnostics</summary>
+  <!-- Every pane state, reachable on demand. States nobody can look at are
+       states nobody checks: "indexing 46%" and "needs a newer Standpoint"
+       otherwise require contriving the conditions that produce them. -->
+  <div class="row" id="state-switch"></div>
   <pre id="diag"></pre>
 </details>
 
