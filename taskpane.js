@@ -1,510 +1,670 @@
-/* Standpoint.Bio — Word add-in, Phase 2 connection and events spike.
+/* Standpoint.Bio — the Word task pane.
  *
- * This pane MEASURES; it is not a feature.
+ * Evidence from the scientist's own library, beside the sentence they are
+ * drafting. Served by the app itself over TLS, so every call below is
+ * SAME-ORIGIN: no host to configure, no CORS entry, no pairing code. That is
+ * the whole architecture, and it is why `location.origin` is the only address
+ * in this file.
  *
- * QUESTION 2 IS ANSWERED. Mac Word fires paragraph events about 0.9 times a
- * second while someone types (min 882 ms, max 1584 ms, mean 1131 over 17
- * intervals), with WordApi 1.1-1.7 available. Word coalesces internally, so
- * live hints need no debouncing of their own.
+ * WHAT NEVER LEAVES THE MACHINE: the draft. Searching the library is local. The
+ * only thing here that can reach the internet is the literature search at the
+ * bottom, and it sends the KEYWORDS — picked locally, shown first, editable,
+ * and only when a button is pressed.
  *
- * QUESTION 1 IS WHY THIS STILL EXISTS. Mac Word refused
- * http://localhost:8000 in 7 MILLISECONDS -- against 45 ms for a request that
- * really happened, so nothing travelled and no prompt appeared. Chrome, by
- * contrast, HUNG and then worked once the user granted a local-network
- * permission.
- *
- * But that refused request was three things at once: plaintext, aimed at the
- * local machine, and cross-origin. Only the failure was measured, not which of
- * the three caused it -- and the fix differs per cause. So the probes below
- * separate them, and the pane is run from two origins to vary the third.
- *
- * It must also RUN OUTSIDE WORD. A pane that only works inside its host cannot
- * be debugged anywhere else, so with no Office host present everything except
- * the Word-specific checks still runs.
+ * No framework and no build step: what is sideloaded is what is in git.
  */
 
 'use strict';
 
-// WHERE THE BACKEND IS: wherever this page came from.
-//
-// The app serves this pane itself, so its own origin is the backend's origin
-// and every call is same-origin. That is the whole architecture in one line --
-// no host to configure, no CORS entry, no pairing code, and nothing to go stale
-// if a port ever changes.
-//
-// The fallbacks exist only for the spike's two-origin comparison, which is what
-// established that a hosted pane cannot reach this machine at all.
-var SAME_ORIGIN = location.origin;
-var BACKEND = 'http://localhost:8000';
-var BACKEND_TLS = 'https://127.0.0.1:8443';
-var PROBE_TIMEOUT_MS = 6000;
+var API = location.origin;
+
+/* The API shape this pane was written against. The pane ships inside the app,
+ * so the two cannot normally disagree — but the manifest in Word's wef/ folder
+ * survives upgrades, which is the one real way to end up talking to a backend
+ * that has moved on. A version string would be theatre; this is not. */
+var ADDIN_CONTRACT = 1;
+
+/* Word coalesces paragraph events internally at ~0.87/s (measured on Mac Word),
+ * so this is a pause detector, not a debounce. */
+var PAUSE_MS = 1500;
 
 var state = {
-  office: 'not started',
-  env: {},
-  probes: [],
-  selection: null,
-  selectionError: null,
-  events: { selection: 0, paragraph: 0, stamps: [], api: [] },
-  startedAt: new Date().toISOString(),
+  standpointId: null,
+  live: true,
+  cache: new Map(),
+  builtAt: null,
+  pauseTimer: null,
+  lastQuery: '',
+  seq: 0,                  // guards against an older search landing last
+  diag: [],
 };
 
-/* ── tiny DOM helpers ─────────────────────────────────────────────────────── */
+/* ── helpers ──────────────────────────────────────────────────────────────── */
 
-function row(parent, key, value, cls) {
-  var d = document.createElement('div');
-  d.className = 'row';
-  var k = document.createElement('span'); k.className = 'k'; k.textContent = key;
-  var v = document.createElement('span'); v.className = 'v ' + (cls || ''); v.textContent = value;
-  d.appendChild(k); d.appendChild(v); parent.appendChild(d);
-  return v;
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); return node; }
+function byId(id) { return document.getElementById(id); }
+
+function log(line) {
+  state.diag.push(new Date().toISOString().slice(11, 19) + '  ' + line);
+  if (state.diag.length > 60) state.diag.shift();
+  var d = byId('diag');
+  if (d) d.textContent = state.diag.join('\n');
 }
 
-function clear(id) { var e = document.getElementById(id); e.innerHTML = ''; return e; }
-
-/* Which of the two sideloaded copies is this?
- *
- * Both manifests open an identical-looking pane, so without a visible label two
- * reports can be transposed and the entire comparison is silently inverted --
- * the one mistake that would make this spike worse than not running it. The
- * answer is just the page's own origin, which is also the variable under test. */
-function servedFrom() {
-  // Compared against BACKEND_TLS EXACTLY. A looser test ("does the origin
-  // mention localhost") called a dev server on another port the LOCAL copy and
-  // claimed same-origin when probe 3 was still cross-origin -- which would have
-  // mislabelled the one variable this spike is varying.
-  if (location.origin === BACKEND_TLS) {
-    return 'served by Standpoint over TLS — this is what Word loads';
-  }
-  if (location.protocol === 'file:') return 'opened from a file, not served';
-  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(location.origin)) {
-    // The app serves the pane on its plain door too, which is how it gets
-    // opened in a real browser where devtools exist. Word cannot use this one:
-    // Office refuses a plain-http SourceLocation.
-    return 'served by Standpoint at ' + location.origin + ' — for debugging, '
-         + 'not the address Word uses';
-  }
-  return 'HOSTED copy — served from ' + location.host + ', a public origin. '
-       + 'Measured on Mac Word: a pane served this way cannot reach this '
-       + 'machine at all.';
-}
-
-/* ── 1 · environment ──────────────────────────────────────────────────────── */
-//
-// The user-agent string is the single most useful line in the whole report: it
-// names the engine (WebView2 vs WebKit) and its version, which is what any
-// later search about a platform difference has to start from.
-
-function readEnv(officeInfo) {
-  var e = state.env;
-  e.userAgent = navigator.userAgent;
-  e.origin = location.origin;
-  e.secureContext = String(window.isSecureContext);
-  e.officeJsLoaded = String(typeof Office !== 'undefined' && !!Office);
-
-  // Office.js loads and even calls onReady OUTSIDE Office, with host and
-  // platform both null. String(null) is "null", which is truthy -- so naively
-  // stringifying here painted "no host at all" green, exactly like a healthy
-  // Word. Keep the absence absent.
-  if (officeInfo) {
-    if (officeInfo.host != null) e.host = String(officeInfo.host);
-    if (officeInfo.platform != null) e.platform = String(officeInfo.platform);
-  }
-  try {
-    if (typeof Office !== 'undefined' && Office.context && Office.context.diagnostics) {
-      var d = Office.context.diagnostics;
-      if (d.version) e.officeVersion = String(d.version);
-      if (d.host) e.officeHost = String(d.host);
-      if (d.platform) e.officePlatform = String(d.platform);
+function api(path, opts) {
+  return fetch(API + path, opts).then(function (r) {
+    if (!r.ok) {
+      var err = new Error('HTTP ' + r.status);
+      err.status = r.status;
+      throw err;
     }
-  } catch (err) { e.diagnosticsError = String(err); }
+    return r.status === 204 ? null : r.json();
+  });
+}
 
-  // Which API levels this host actually offers. The event used below for
-  // content changes needs WordApi 1.5; without it, only the Common API
-  // selection event is available and live hints lose their best signal.
-  try {
-    if (typeof Office !== 'undefined' && Office.context && Office.context.requirements) {
-      var sets = [];
-      ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7'].forEach(function (v) {
-        try {
-          if (Office.context.requirements.isSetSupported('WordApi', v)) sets.push(v);
-        } catch (err) { /* older hosts throw rather than return false */ }
+/* ── the one line a scientist reads ───────────────────────────────────────── */
+//
+// These states are mutually exclusive and each wants a DIFFERENT action from
+// the reader, which is why they live in one place rather than as scattered
+// flags. "Standpoint isn't running" and "your library is still being read" both
+// show an empty pane and mean entirely different things.
+//
+// There is deliberately NO "certificate not trusted" state: an untrusted
+// certificate means this page never loads at all, so a state for it could never
+// be seen. Settings handles that, and addin/README.md says so.
+
+function setState(kind, message, extraNode) {
+  var box = byId('state');
+  clear(box);
+  box.className = 'state state--' + kind;
+  var wrap = el('div', null, message);
+  if (extraNode) wrap.appendChild(extraNode);
+  box.appendChild(wrap);
+}
+
+function stateIndexing(percent) {
+  var wrap = el('div');
+  wrap.appendChild(el('b', null, 'Reading your library'));
+  wrap.appendChild(document.createTextNode(percent == null ? '…' : '… ' + percent + '%'));
+  wrap.appendChild(el('div', 'hint',
+    'Searches are incomplete until this finishes. It runs once.'));
+  if (percent != null) {
+    var bar = el('div', 'bar');
+    var fill = el('i');
+    fill.style.width = Math.max(2, percent) + '%';
+    bar.appendChild(fill);
+    wrap.appendChild(bar);
+  }
+  var box = byId('state');
+  clear(box);
+  box.className = 'state state--wait';
+  box.appendChild(wrap);
+}
+
+function stateNoMatches(onWeaker) {
+  var wrap = el('div');
+  wrap.appendChild(el('b', null, 'No strong matches'));
+  wrap.appendChild(el('div', 'hint',
+    'Nothing in your library matches this sentence closely. That is an answer, '
+    + 'not a failure — but the weaker matches are there if you want them.'));
+  var act = el('div', 'act');
+  var b = el('button', null, 'Show weaker results');
+  b.addEventListener('click', onWeaker);
+  act.appendChild(b);
+  wrap.appendChild(act);
+  var box = byId('state');
+  clear(box);
+  box.className = 'state state--wait';
+  box.appendChild(wrap);
+}
+
+/* ── cards ────────────────────────────────────────────────────────────────── */
+
+var LABELS = {
+  supports: 'Supports your standpoint',
+  contradicts: 'Contradicts your standpoint',
+  ambiguous: 'Mixed evidence',
+  not_relevant: 'Not relevant to your standpoint',
+};
+
+function labelChip(label) {
+  // null is NOT not_relevant. `not_relevant` is the majority verdict and means
+  // it WAS assessed and judged not to bear on the standpoint; null means nobody
+  // has judged it yet. Collapsing the two would misreport most of the library.
+  var key = label || 'none';
+  return el('span', 'chip chip--' + key, label ? LABELS[label] : 'Not assessed');
+}
+
+/* A task pane is about 320px wide and a retrieved chunk is ~1,100 characters —
+ * roughly fifteen lines each, 3,365px of scrolling for six cards when measured.
+ * Nobody reads that mid-sentence. The full text is already in the payload, so
+ * expanding costs nothing and the default stays scannable. */
+var PASSAGE_CHARS = 260;
+
+function passageNode(card) {
+  var full = card.text || '';
+  var wrap = el('div', 'passage' + (card.below_threshold ? ' weak' : ''));
+  if (full.length <= PASSAGE_CHARS) {
+    wrap.textContent = full;
+    return wrap;
+  }
+  // Cut at a word boundary: a mid-word ellipsis reads as corruption.
+  var cut = full.slice(0, PASSAGE_CHARS);
+  var sp = cut.lastIndexOf(' ');
+  if (sp > PASSAGE_CHARS * 0.6) cut = cut.slice(0, sp);
+
+  var short = el('span', null, cut + '… ');
+  var more = el('button', 'inline-more', 'more');
+  more.addEventListener('click', function () {
+    wrap.textContent = full;
+  });
+  wrap.appendChild(short);
+  wrap.appendChild(more);
+  return wrap;
+}
+
+function cardNode(card) {
+  var node = el('div', 'card');
+  node.appendChild(labelChip(card.label));
+  node.appendChild(passageNode(card));
+  if (card.below_threshold) node.appendChild(el('div', 'hint', 'Weaker match'));
+
+  if (card.file_trashed) {
+    // FLAGGED, NEVER FILTERED — the rule services/synthesis.py already keeps.
+    // The finding still carries its weight in the standpoint's balance, so a
+    // pane that quietly dropped it would disagree with the app.
+    node.appendChild(el('div', 'flag',
+      '⚠ Source file "' + (card.file_name || 'unknown') + '" is in the trash. '
+      + 'This conclusion still counts towards your standpoint.'));
+  }
+
+  var acts = el('div', 'acts');
+  var open = el('button', null, 'Open in Standpoint');
+  open.addEventListener('click', function () { openInApp(card, open); });
+  acts.appendChild(open);
+  if (card.doi) {
+    var copy = el('button', null, 'Copy DOI');
+    copy.addEventListener('click', function () { copyText(card.doi, copy); });
+    acts.appendChild(copy);
+  }
+  node.appendChild(acts);
+  return node;
+}
+
+/* Grouped by paper, IN THE RETRIEVER'S ORDER, which this must not re-sort:
+ * that order is what the sealed eval scored. */
+function renderCards(payload, query) {
+  var box = clear(byId('results'));
+  var cards = payload.cards || [];
+  if (!cards.length) return;
+
+  var groups = [];
+  var byPaper = new Map();
+  cards.forEach(function (c) {
+    var key = c.paper_id != null ? 'p' + c.paper_id : 'f' + c.finding_id;
+    var g = byPaper.get(key);
+    if (!g) { g = { head: c, cards: [] }; byPaper.set(key, g); groups.push(g); }
+    g.cards.push(c);
+  });
+
+  groups.forEach(function (g) {
+    var head = g.head;
+    var wrap = el('div', 'group');
+    var h = el('div', 'group-head');
+    h.appendChild(el('div', 'ptitle',
+      head.title || (head.finding_id != null ? 'Your own bench conclusion' : 'Untitled')));
+    var meta = [head.journal, head.year].filter(Boolean).join(' · ');
+    if (meta) h.appendChild(el('div', 'pmeta', meta));
+    wrap.appendChild(h);
+
+    g.cards.forEach(function (c) { wrap.appendChild(cardNode(c)); });
+
+    if (head.extra_from_paper > 0) {
+      var more = el('button', 'more',
+        '+' + head.extra_from_paper + ' more from this paper');
+      more.addEventListener('click', function () {
+        more.disabled = true;
+        more.textContent = 'Loading…';
+        search(query, { includeOverflow: true, weak: payload._weak, force: true });
       });
-      e.wordApi = sets.length ? sets.join(', ') : '(none reported)';
+      wrap.appendChild(more);
     }
-  } catch (err) { e.requirementsError = String(err); }
-
-  var box = clear('env');
-  row(box, 'Office.js loaded', e.officeJsLoaded, e.officeJsLoaded === 'true' ? 'ok' : 'bad');
-  row(box, 'host', e.host || '(no Office host)', e.host ? 'ok' : 'warn');
-  row(box, 'platform', e.platform || '—', e.platform ? 'ok' : 'idle');
-  row(box, 'Office version', e.officeVersion || '—', 'idle');
-  row(box, 'WordApi sets', e.wordApi || '—', e.wordApi ? 'ok' : 'idle');
-  row(box, 'page origin', e.origin, 'idle');
-  row(box, 'secure context', e.secureContext, e.secureContext === 'true' ? 'ok' : 'warn');
-  row(box, 'user agent', e.userAgent, 'idle');
-}
-
-/* ── 2 · reaching the backend ─────────────────────────────────────────────── */
-//
-// WHY SEVERAL PROBES RATHER THAN ONE. From JavaScript, a blocked request, a
-// CORS rejection, a rejected certificate and a refused connection are
-// INDISTINGUISHABLE -- all arrive as a bare TypeError with no further detail,
-// by design, so that a page cannot use fetch to port-scan a machine. One red
-// cross would not say which architecture to choose.
-//
-// The TIMING carries information the error text does not. A real request to a
-// real server costs tens of milliseconds; Mac Word's refusal came back in 7,
-// which is too fast for anything to have left the machine. And a request
-// awaiting a permission HANGS rather than failing, which is how Chrome's gate
-// was identified. So both are reported.
-//
-// The control proves fetch works in this webview at all, so a failure above is
-// specific to its target rather than general.
-
-function probe(label, url, expect) {
-  var started = Date.now();
-  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  // A BLOCKED request can hang rather than reject, which would leave the row
-  // on "running" forever and read as a crash.
-  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, PROBE_TIMEOUT_MS) : null;
-
-  var opts = { method: 'GET', cache: 'no-store' };
-  if (ctrl) opts.signal = ctrl.signal;
-
-  return fetch(url, opts).then(function (res) {
-    if (timer) clearTimeout(timer);
-    return res.text().then(function (body) {
-      return {
-        label: label, url: url, ok: res.ok, status: res.status,
-        ms: Date.now() - started,
-        detail: (body || '').slice(0, 120),
-        expect: expect,
-      };
-    });
-  }).catch(function (err) {
-    if (timer) clearTimeout(timer);
-    var aborted = err && (err.name === 'AbortError');
-    return {
-      label: label, url: url, ok: false, status: 0, ms: Date.now() - started,
-      detail: aborted
-        ? 'timed out after ' + PROBE_TIMEOUT_MS + ' ms (a blocked request can hang rather than fail)'
-        : (err && err.name ? err.name : 'Error') + ': ' + (err && err.message ? err.message : String(err)),
-      expect: expect,
-    };
+    box.appendChild(wrap);
   });
-}
 
-/* The one line a scientist reads.
- *
- * Deliberately says WHICH failure it is. "Can't reach Standpoint" and "the
- * certificate was refused" need different actions from the reader, and the
- * whole lesson of this phase is that a rejected certificate produces no error
- * text anywhere -- it just looks broken. If the pane rendered at all the
- * certificate was accepted, so a failure here is the app not running. */
-function setStatus(probe) {
-  var el = document.getElementById('status');
-  if (!el) return;
-  if (probe && probe.ok) {
-    el.className = 'status status--ok';
-    el.textContent = 'Connected to Standpoint';
-  } else {
-    el.className = 'status status--bad';
-    el.textContent = 'Standpoint isn\u2019t running on this computer. '
-                   + 'Open it, then reload this pane.';
+  // The contradiction guarantee's honest remainder. Disagreement past the cap
+  // is REPORTED rather than dropped, because a silent cap looks like agreement.
+  var hidden = cards[0] && cards[0].more_disagreeing;
+  if (hidden) {
+    var warn = el('div', 'state state--warn');
+    warn.appendChild(el('div', null,
+      '+' + hidden + ' more passage' + (hidden === 1 ? '' : 's')
+      + ' disagree with your standpoint and are not shown.'));
+    box.appendChild(warn);
   }
 }
 
-function runProbes() {
-  var box = clear('net');
-  row(box, 'running…', '', 'idle');
+/* ── searching ────────────────────────────────────────────────────────────── */
 
-  // FOUR probes, because the failure we are chasing had THREE causes at once
-  // and only one of them was measured. Mac Word refused
-  // http://localhost:8000 in 7 ms, and that request was simultaneously
-  // plaintext, aimed at the local machine, and cross-origin. These four
-  // separate them:
-  //
-  //   plaintext http  ..... rows 1 and 2
-  //   secure https    ..... row 3, same destination
-  //   cross-origin    ..... rows 1-3 when this page is served from Pages,
-  //                         row 3 is SAME-origin when served from :8443
-  //   nothing at all  ..... row 4, which must always pass
-  //
-  // So one run of this pane from each of the two origins tells us which rule
-  // actually bit, rather than which workaround happens to survive.
-  var jobs = [
-    // THE ONE THAT DECIDES THE STATUS LINE. Same-origin, so it is subject to
-    // none of the rules the others exist to test.
-    probe('this app (same origin)', SAME_ORIGIN + '/health', 'the shipping path'),
-    probe('http localhost:8000', BACKEND + '/health', 'what Mac Word refused'),
-    probe('http 127.0.0.1:8000', 'http://127.0.0.1:8000/health', 'same thing by IP'),
-    probe('https 127.0.0.1:8443', BACKEND_TLS + '/health', 'Option B'),
-    // Same origin as this page, so it needs no CORS and no plaintext: if THIS
-    // fails, the webview has no network and nothing above means anything.
-    probe('control (own origin)', location.origin + location.pathname + '?probe=' + Date.now(), 'must succeed'),
-  ];
-
-  return Promise.all(jobs).then(function (results) {
-    state.probes = results;
-    setStatus(results[0]);
-    var b = clear('net');
-    results.forEach(function (r) {
-      var good = r.ok;
-      var text = good ? ('HTTP ' + r.status + ' · ' + r.ms + ' ms') : r.detail;
-      row(b, r.label, text, good ? 'ok' : 'bad');
-      if (good && r.detail && r.label !== 'control (own origin)') {
-        row(b, '', r.detail, 'idle');
-      }
-    });
-    buildReport();
-    return results;
-  });
+function cacheKey(query, weak, overflow) {
+  // Text, standpoint AND the index's build stamp. Without the stamp, a paper
+  // added through the pane would not appear in a paragraph already looked at —
+  // exactly when the scientist is checking whether the add worked. Without the
+  // standpoint, the same sentence would show another standpoint's verdicts.
+  return [query, state.standpointId, state.builtAt, weak ? 'w' : '',
+          overflow ? 'o' : ''].join(' ');
 }
 
-/* ── 3 · the selection ────────────────────────────────────────────────────── */
+function search(query, opts) {
+  opts = opts || {};
+  query = (query || '').trim();
+  if (!query || state.standpointId == null) return Promise.resolve();
 
-function readSelection() {
-  var box = clear('sel');
-  if (typeof Word === 'undefined') {
-    row(box, 'status', 'no Word host — skipped', 'idle');
+  var key = cacheKey(query, opts.weak, opts.includeOverflow);
+  if (!opts.force && state.cache.has(key)) {
+    applyResult(state.cache.get(key), query);
+    log('cache hit');
     return Promise.resolve();
   }
+
+  var mine = ++state.seq;
+  state.lastQuery = query;
+  setState('wait', 'Searching your library…');
+
+  return api('/write/retrieve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: query,
+      hypothesis_id: state.standpointId,
+      include_weak: !!opts.weak,
+      include_overflow: !!opts.includeOverflow,
+    }),
+  }).then(function (res) {
+    // An older search must never overwrite a newer one; typing produces
+    // overlapping requests by construction.
+    if (mine !== state.seq) { log('stale result dropped'); return; }
+    res._weak = !!opts.weak;
+    state.cache.set(key, res);
+    applyResult(res, query);
+  }).catch(function (err) {
+    if (mine !== state.seq) return;
+    handleError(err);
+  });
+}
+
+function applyResult(res, query) {
+  if (res.index_status === 'building') {
+    clear(byId('results'));
+    stateIndexing(res.percent);
+    return;
+  }
+  if (res.suppressed) {
+    clear(byId('results'));
+    stateNoMatches(function () { search(query, { weak: true, force: true }); });
+    return;
+  }
+  var n = (res.cards || []).length;
+  if (!n) {
+    clear(byId('results'));
+    setState('wait', 'Nothing to show for this sentence.');
+    return;
+  }
+  setState('ok', n + ' passage' + (n === 1 ? '' : 's') + ' from your library'
+    + (res._weak ? ' (weaker matches)' : ''));
+  renderCards(res, query);
+}
+
+function handleError(err) {
+  clear(byId('results'));
+  if (err && err.status) {
+    setState('bad', 'Standpoint replied with an error (HTTP ' + err.status + ').');
+  } else {
+    // A failed fetch from a pane that LOADED means the app stopped — not that
+    // the certificate is untrusted, which would have stopped this page
+    // rendering at all.
+    setState('bad', 'Standpoint isn’t running on this computer. '
+      + 'Open it, then press Find evidence.');
+  }
+  log('error: ' + (err && err.message));
+}
+
+/* ── actions on a card ────────────────────────────────────────────────────── */
+
+function openInApp(card, button) {
+  // POSTs to the backend, which validates against the database and asks
+  // Electron to come forward. NOT a custom-scheme link: whether a sandboxed
+  // task pane may hand a URL to the OS is unknown, and a failure there is
+  // silent — the link would simply do nothing.
+  var isFinding = card.finding_id != null && card.paper_id == null;
+  var body = {
+    kind: isFinding ? 'finding' : 'paper',
+    id: isFinding ? card.finding_id : card.paper_id,
+    hypothesis_id: state.standpointId,
+  };
+  if (body.id == null) return;
+  var restore = function (text) {
+    button.textContent = text;
+    setTimeout(function () { button.textContent = 'Open in Standpoint'; }, 1900);
+  };
+  api('/addin/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(function () { restore('Opened'); })
+    .catch(function () { restore('Couldn’t open'); });
+}
+
+function copyText(text, button) {
+  var done = function (msg) {
+    button.textContent = msg;
+    setTimeout(function () { button.textContent = 'Copy DOI'; }, 1800);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(function () { done('Copied'); })
+      .catch(function () { fallbackCopy(text, done); });
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, done) {
+  // An embedded webview can refuse the clipboard. Showing the text so it can be
+  // selected by hand beats a button that silently does nothing.
+  setState('wait', 'Copy this: ' + text);
+  done('Shown above');
+}
+
+/* ── live hints ───────────────────────────────────────────────────────────── */
+
+function currentText() {
+  if (typeof Word === 'undefined') return Promise.resolve('');
   return Word.run(function (ctx) {
     var sel = ctx.document.getSelection();
     sel.load('text');
+    var paras = sel.paragraphs;
+    paras.load('items/text');
     return ctx.sync().then(function () {
-      var t = (sel.text || '').replace(/\s+/g, ' ').trim();
-      state.selection = t;
-      var b = clear('sel');
-      row(b, 'characters', String(t.length), t.length ? 'ok' : 'warn');
-      row(b, 'text', t ? (t.slice(0, 80) + (t.length > 80 ? '…' : '')) : '(nothing selected)',
-          t.length ? 'ok' : 'idle');
-      buildReport();
+      // A selection if there is one, otherwise the paragraph the cursor is in.
+      var selected = (sel.text || '').trim();
+      if (selected.length > 2) return selected;
+      var items = paras.items || [];
+      return items.length ? (items[0].text || '').trim() : '';
     });
-  }).catch(function (err) {
-    state.selectionError = String(err && err.message ? err.message : err);
-    var b = clear('sel');
-    row(b, 'failed', state.selectionError, 'bad');
-    buildReport();
+  }).catch(function () { return ''; });
+}
+
+function onPause() {
+  if (!state.live) return;
+  currentText().then(function (text) {
+    if (!text || text === state.lastQuery) return;
+    log('live hint, ' + text.length + ' chars');
+    search(text);
   });
 }
 
-/* ── 4 · events while typing ──────────────────────────────────────────────── */
-//
-// TWO DIFFERENT EVENTS, because they answer different halves of the question.
-//
-//   DocumentSelectionChanged (Common API, supported for a long time) fires when
-//   the CURSOR or selection moves. It is the fallback signal: "refresh when the
-//   cursor reaches a new paragraph".
-//
-//   Word.Document.onParagraphChanged (WordApi 1.5) fires when a paragraph's
-//   CONTENT changes -- which is what typing actually is, and therefore the
-//   signal live hints want. It may not exist on an older host, so it is
-//   registered defensively and its absence is reported rather than thrown.
-//
-// Registering only one would have produced a confident, wrong answer: a host
-// where selection events are sparse while typing might still stream paragraph
-// events, and vice versa.
-
-function stamp(kind) {
-  var now = Date.now();
-  var s = state.events.stamps;
-  var gap = s.length ? (now - s[s.length - 1].t) : null;
-  s.push({ t: now, kind: kind, gap: gap });
-  if (s.length > 40) s.shift();
-
-  if (kind === 'selection') state.events.selection++;
-  else state.events.paragraph++;
-
-  document.getElementById('c-sel').textContent = String(state.events.selection);
-  document.getElementById('c-par').textContent = String(state.events.paragraph);
-  renderEvents();
+function schedulePause() {
+  if (state.pauseTimer) clearTimeout(state.pauseTimer);
+  state.pauseTimer = setTimeout(onPause, PAUSE_MS);
 }
 
-function renderEvents() {
-  var box = clear('ev');
-  var apis = state.events.api;
-  apis.forEach(function (a) { row(box, a.name, a.status, a.ok ? 'ok' : 'bad'); });
+/* ── literature ───────────────────────────────────────────────────────────── */
 
-  var s = state.events.stamps;
-  var gaps = s.map(function (x) { return x.gap; }).filter(function (g) { return g !== null; });
-  if (gaps.length) {
-    var sorted = gaps.slice().sort(function (a, b) { return a - b; });
-    var median = sorted[Math.floor(sorted.length / 2)];
-    row(box, 'median gap', median + ' ms', 'ok');
-    row(box, 'fastest / slowest', sorted[0] + ' / ' + sorted[sorted.length - 1] + ' ms', 'idle');
-    row(box, 'last 10 gaps',
-        s.slice(-10).map(function (x) {
-          return (x.kind === 'selection' ? 's' : 'p') + ':' + (x.gap === null ? '—' : x.gap);
-        }).join('  '), 'idle');
-  }
-  buildReport();
+function renderLiterature() {
+  var box = clear(byId('lit'));
+
+  box.appendChild(el('p', 'note',
+    'Keywords are chosen on this computer from the sentence you are writing. '
+    + 'Your sentence is never sent anywhere — only the words below, and only '
+    + 'when you press Search.'));
+
+  var field = el('label', 'field');
+  field.appendChild(el('span', null, 'Keywords (edit before searching)'));
+  var input = el('input');
+  input.type = 'text';
+  field.appendChild(input);
+  box.appendChild(field);
+
+  // NAMED BEFORE THE CLICK, not after. That is the difference between choosing
+  // to send three words to three public databases and finding out afterwards.
+  box.appendChild(el('p', 'note', 'Searches PubMed, Europe PMC and OpenAlex.'));
+
+  var row = el('div', 'row');
+  var suggest = el('button', null, 'Suggest from my sentence');
+  suggest.addEventListener('click', function () { suggestKeywords(input, suggest); });
+  var go = el('button', 'primary', 'Search');
+  go.addEventListener('click', function () { runLiterature(input.value, go); });
+  row.appendChild(suggest);
+  row.appendChild(go);
+  box.appendChild(row);
+
+  var out = el('div');
+  out.id = 'lit-results';
+  box.appendChild(out);
 }
 
-function registerEvents() {
-  // The Common API selection event.
-  try {
-    if (typeof Office !== 'undefined' && Office.context && Office.context.document &&
-        Office.context.document.addHandlerAsync) {
-      Office.context.document.addHandlerAsync(
-        Office.EventType.DocumentSelectionChanged,
-        function () { stamp('selection'); },
-        function (res) {
-          state.events.api.push({
-            name: 'DocumentSelectionChanged',
-            ok: res.status === Office.AsyncResultStatus.Succeeded,
-            status: res.status === Office.AsyncResultStatus.Succeeded
-              ? 'registered'
-              : ('failed: ' + (res.error && res.error.message)),
-          });
-          renderEvents();
-        });
-    } else {
-      state.events.api.push({ name: 'DocumentSelectionChanged', ok: false, status: 'no Office host' });
-    }
-  } catch (err) {
-    state.events.api.push({ name: 'DocumentSelectionChanged', ok: false, status: String(err) });
-  }
+function suggestKeywords(input, button) {
+  button.disabled = true;
+  currentText().then(function (text) {
+    if (!text) return null;
+    return api('/addin/keywords', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence: text }),
+    }).then(function (res) {
+      var kws = (res && res.keywords) || [];
+      input.value = kws.join(' ');
+      if (!kws.length) {
+        // A sentence of pure scaffolding has nothing to search for, and saying
+        // so beats an empty box with no explanation.
+        clear(byId('lit-results')).textContent =
+          'No distinctive terms in that sentence — try one naming the molecule, '
+          + 'tissue or method, or type your own keywords.';
+      }
+    });
+  }).catch(function () {}).then(function () { button.disabled = false; });
+}
 
-  // The Word content event. WordApi 1.5; absent hosts must degrade, not throw.
-  if (typeof Word === 'undefined') {
-    state.events.api.push({ name: 'onParagraphChanged', ok: false, status: 'no Word host' });
-    renderEvents();
-    return;
-  }
-  Word.run(function (ctx) {
-    if (!ctx.document.onParagraphChanged) {
-      state.events.api.push({
-        name: 'onParagraphChanged', ok: false,
-        status: 'not available on this host (needs WordApi 1.5)',
+function runLiterature(terms, button) {
+  terms = (terms || '').trim();
+  var out = clear(byId('lit-results'));
+  if (!terms) { out.textContent = 'Enter some keywords first.'; return; }
+  button.disabled = true;
+  out.textContent = 'Searching PubMed, Europe PMC and OpenAlex…';
+
+  api('/literature/search?query=' + encodeURIComponent(terms) + '&retmax=10')
+    .then(function (res) {
+      var results = (res && res.results) || [];
+      var box = clear(byId('lit-results'));
+      if (!results.length) { box.textContent = 'No results for those keywords.'; return; }
+      results.forEach(function (r) {
+        var card = el('div', 'lit-result');
+        card.appendChild(el('div', 'ptitle', r.title || 'Untitled'));
+        var meta = [r.journal, r.year].filter(Boolean).join(' · ');
+        if (meta) card.appendChild(el('div', 'pmeta', meta));
+        // NO LABEL, deliberately. These are not in the library and have not
+        // been assessed against the standpoint; a verdict here would be a
+        // fabrication.
+        var acts = el('div', 'acts');
+        if (r.pmid) {
+          var add = el('button', null, 'Add to library');
+          add.addEventListener('click', function () { addPaper(r, add); });
+          acts.appendChild(add);
+        } else {
+          // POST /literature/add REQUIRES a pmid. Europe PMC and OpenAlex both
+          // return records without one, so offering a button that can only 422
+          // would be a lie about what the app can do. Say why instead.
+          acts.appendChild(el('span', 'hint',
+            'No PubMed id \u2014 add this one from the app'));
+        }
+        if (r.doi) {
+          var cp = el('button', null, 'Copy DOI');
+          cp.addEventListener('click', function () { copyText(r.doi, cp); });
+          acts.appendChild(cp);
+        }
+        card.appendChild(acts);
+        box.appendChild(card);
       });
-      renderEvents();
-      return ctx.sync();
-    }
-    ctx.document.onParagraphChanged.add(function () { stamp('paragraph'); return Promise.resolve(); });
-    return ctx.sync().then(function () {
-      state.events.api.push({ name: 'onParagraphChanged', ok: true, status: 'registered' });
-      renderEvents();
-    });
+    })
+    .catch(function (err) {
+      clear(byId('lit-results')).textContent =
+        'Search failed' + (err && err.status ? ' (HTTP ' + err.status + ')' : '') + '.';
+    })
+    .then(function () { button.disabled = false; });
+}
+
+function addPaper(result, button) {
+  button.disabled = true;
+  button.textContent = 'Adding…';
+  api('/literature/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // CARRY THE WHOLE RECORD. The search already knows the journal, year,
+    // authors and pmcid, and schemas.py records that these were previously
+    // "arriving and being thrown away" — a stored paper that cannot be cited
+    // later is a paper the scientist has to look up twice.
+    body: JSON.stringify({
+      hypothesis_id: state.standpointId,
+      pmid: result.pmid,
+      pmcid: result.pmcid || null,
+      title: result.title || '',
+      authors: result.authors || null,
+      year: result.year || null,
+      doi: result.doi || null,
+      journal: result.journal || null,
+    }),
+  }).then(function () {
+    // INDEXING, not indexed. request_reconcile runs in the background, so the
+    // paper is not searchable the instant it lands — and a search that missed
+    // it would look like the add having failed.
+    button.textContent = 'Added, indexing…';
+    // Drop the cache so the next search sees the new paper.
+    state.cache.clear();
+    state.builtAt = null;
   }).catch(function (err) {
-    state.events.api.push({
-      name: 'onParagraphChanged', ok: false,
-      status: String(err && err.message ? err.message : err),
+    button.disabled = false;
+    button.textContent = (err && err.status === 409) ? 'Already in library'
+                                                     : 'Couldn’t add';
+  });
+}
+
+/* ── startup ──────────────────────────────────────────────────────────────── */
+
+function loadStandpoints() {
+  return api('/addin/standpoints').then(function (res) {
+    var sel = clear(byId('standpoint'));
+    (res.standpoints || []).forEach(function (s) {
+      var o = el('option', null, s.title);
+      o.value = s.id;
+      sel.appendChild(o);
     });
-    renderEvents();
+    // Per-DOCUMENT memory, stored in the .docx: a manuscript about cartilage
+    // keeps pointing at the cartilage standpoint even after the app moves on.
+    var remembered = null;
+    try {
+      if (typeof Office !== 'undefined' && Office.context && Office.context.document
+          && Office.context.document.settings) {
+        remembered = Office.context.document.settings.get('standpointId');
+      }
+    } catch (e) { /* no document settings outside Word */ }
+    var pick = remembered != null ? remembered : res.last_used;
+    if (pick != null) sel.value = String(pick);
+    state.standpointId = Number(sel.value) || res.last_used || null;
+    log('standpoint ' + state.standpointId);
   });
 }
 
-/* ── 5 · the report ───────────────────────────────────────────────────────── */
-//
-// Rendered into a textarea as well as copied, because navigator.clipboard can
-// be refused inside an embedded webview and a "Copy" button that silently did
-// nothing would lose the whole run. Select-all in the box always works.
-
-function buildReport() {
-  var L = [];
-  L.push('STANDPOINT WORD ADD-IN — PHASE 2 SPIKE');
-  // First line after the title, so a pasted report can never be attributed to
-  // the wrong copy.
-  L.push(servedFrom());
-  L.push('started ' + state.startedAt);
-  L.push('');
-  L.push('[environment]');
-  Object.keys(state.env).forEach(function (k) { L.push('  ' + k + ': ' + state.env[k]); });
-  L.push('  Office.onReady: ' + state.office);
-  L.push('');
-  L.push('[backend probes]  target ' + BACKEND);
-  if (!state.probes.length) L.push('  (not run yet)');
-  state.probes.forEach(function (p) {
-    L.push('  ' + p.label + ' -> ' + p.url);
-    L.push('      ' + (p.ok ? 'OK HTTP ' + p.status : 'FAILED') + ' in ' + p.ms + ' ms');
-    L.push('      ' + p.detail);
-  });
-  L.push('');
-  L.push('[selection]');
-  if (state.selectionError) L.push('  error: ' + state.selectionError);
-  else if (state.selection === null) L.push('  (not read)');
-  else L.push('  ' + state.selection.length + ' chars: ' + state.selection.slice(0, 120));
-  L.push('');
-  L.push('[events]');
-  state.events.api.forEach(function (a) { L.push('  ' + a.name + ': ' + a.status); });
-  L.push('  selection events: ' + state.events.selection);
-  L.push('  paragraph events: ' + state.events.paragraph);
-  var gaps = state.events.stamps.map(function (x) { return x.gap; })
-    .filter(function (g) { return g !== null; });
-  if (gaps.length) {
-    var sorted = gaps.slice().sort(function (a, b) { return a - b; });
-    L.push('  gaps ms  median ' + sorted[Math.floor(sorted.length / 2)] +
-           '  min ' + sorted[0] + '  max ' + sorted[sorted.length - 1] +
-           '  n ' + sorted.length);
-    L.push('  sequence: ' + state.events.stamps.slice(-20).map(function (x) {
-      return (x.kind === 'selection' ? 's' : 'p') + ':' + (x.gap === null ? '0' : x.gap);
-    }).join(' '));
-  }
-  document.getElementById('report').value = L.join('\n');
+function rememberStandpoint(id) {
+  try {
+    if (typeof Office !== 'undefined' && Office.context && Office.context.document
+        && Office.context.document.settings) {
+      Office.context.document.settings.set('standpointId', id);
+      Office.context.document.settings.saveAsync(function () {});
+    }
+  } catch (e) { /* a remembered default is not worth an error */ }
 }
 
-function copyReport() {
-  var note = document.getElementById('copied');
-  var text = document.getElementById('report').value;
-  var done = function (msg) { note.textContent = msg; };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text)
-      .then(function () { done('Copied. Paste it back to me.'); })
-      .catch(function (err) { done('Clipboard refused (' + err.name + ') — select the text below and copy by hand.'); });
-  } else {
-    done('No clipboard API here — select the text below and copy by hand.');
-  }
+function checkContract() {
+  return api('/addin/status').then(function (s) {
+    if (s.contract !== ADDIN_CONTRACT) {
+      setState('warn', 'This panel needs a newer Standpoint. Update the app, '
+        + 'then remove and re-add the add-in in Word.');
+      return false;
+    }
+    return true;
+  }).catch(function () { return true; });   // not running is handled elsewhere
 }
-
-/* ── start ────────────────────────────────────────────────────────────────── */
-//
-// Everything that does not need Word runs immediately, so a host that never
-// becomes ready still produces a usable report instead of a blank pane.
 
 function start() {
-  document.getElementById('again').addEventListener('click', runProbes);
-  document.getElementById('copy').addEventListener('click', copyReport);
-  document.getElementById('refresh').addEventListener('click', function () {
-    readSelection(); buildReport();
+  byId('find').addEventListener('click', function () {
+    currentText().then(function (t) {
+      if (!t) { setState('wait', 'Put the cursor in a paragraph, or select a sentence.'); return; }
+      search(t, { force: true });
+    });
   });
 
-  document.getElementById('served-from').textContent = '· ' + servedFrom();
+  var live = byId('live');
+  try {
+    var saved = localStorage.getItem('standpoint.live');
+    if (saved !== null) live.checked = saved === '1';
+  } catch (e) { /* private mode */ }
+  state.live = live.checked;
+  live.addEventListener('change', function () {
+    state.live = live.checked;
+    try { localStorage.setItem('standpoint.live', live.checked ? '1' : '0'); } catch (e) {}
+  });
 
-  readEnv(null);
-  runProbes();
-  buildReport();
+  byId('standpoint').addEventListener('change', function (e) {
+    state.standpointId = Number(e.target.value) || null;
+    state.cache.clear();                 // verdicts differ per standpoint
+    rememberStandpoint(state.standpointId);
+    clear(byId('results'));
+    setState('wait', 'Press Find evidence, or keep typing.');
+  });
+
+  renderLiterature();
+
+  checkContract()
+    .then(function (ok) { return ok ? loadStandpoints() : null; })
+    .then(function () { return api('/write/index-status'); })
+    .then(function (s) {
+      if (!s) return;
+      state.builtAt = s.built_at;
+      if (s.status === 'building') { stateIndexing(s.percent); return; }
+      if (!s.model_available) {
+        setState('warn', 'Search is unavailable: this build has no embedding model.');
+        return;
+      }
+      setState('wait', 'Press Find evidence, or start typing.');
+    })
+    .catch(handleError);
 
   if (typeof Office === 'undefined' || !Office.onReady) {
-    state.office = 'Office.js absent — running outside Word';
-    readEnv(null);
-    renderEvents();
-    buildReport();
+    log('no Office host — running outside Word');
     return;
   }
-
-  // A host that never calls onReady would otherwise leave this at "not
-  // started" with nothing saying so.
-  var settled = false;
-  setTimeout(function () {
-    if (!settled) {
-      state.office = 'onReady did not fire within 8 s';
-      buildReport();
-    }
-  }, 8000);
-
   Office.onReady(function (info) {
-    settled = true;
-    // onReady fires even in a plain browser, reporting a null host. Saying
-    // "ready" there would read as a successful Word connection in the report.
-    state.office = info.host
-      ? ('ready (host=' + info.host + ', platform=' + info.platform + ')')
-      : 'onReady fired with NO host — this is not Word';
-    readEnv(info);
-    readSelection();
-    registerEvents();
-    buildReport();
+    if (!info.host) { log('onReady with no host'); return; }
+    log('Word on ' + info.platform);
+    try {
+      Office.context.document.addHandlerAsync(
+        Office.EventType.DocumentSelectionChanged, schedulePause, function () {});
+    } catch (e) { log('selection events unavailable'); }
+    Word.run(function (ctx) {
+      if (!ctx.document.onParagraphChanged) return ctx.sync();
+      ctx.document.onParagraphChanged.add(function () {
+        schedulePause();
+        return Promise.resolve();
+      });
+      return ctx.sync();
+    }).catch(function () { log('paragraph events unavailable'); });
   });
 }
 

@@ -3,145 +3,154 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Standpoint — connection check</title>
+<title>Standpoint</title>
 
 <!--
-  Office.js from Microsoft's CDN. This is the one external script an Office
-  add-in is expected to load; it is how the pane talks to Word at all.
-  Loaded WITHOUT async/defer deliberately: Office.onReady must be callable by
-  the time taskpane.js runs.
+  Office.js from Microsoft's CDN — the one external script an Office add-in is
+  expected to load, and how the pane talks to Word at all. Loaded WITHOUT
+  async/defer: Office.onReady must be callable by the time taskpane.js runs.
 -->
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 
 <style>
   /* The app's own palette (src/index.css), so the pane is recognisably
-     Standpoint sitting next to a white document. */
+     Standpoint sitting beside a white document. */
   :root {
-    --bg: #0C1417; --panel: #101A1E; --card: #152227; --line: #20343B;
+    --bg: #0C1417; --panel: #101A1E; --card: #152227; --card-hover: #1A2C32;
+    --line: #20343B; --line-soft: #1A2A30;
     --ink: #E9F1F2; --ink-mid: #A7BBC0; --ink-dim: #728A91;
-    --ok: #38B2A3; --bad: #E19542; --warn: #E4C05A; --idle: #7C919A;
+    --supports: #38B2A3; --contradicts: #E19542; --ambiguous: #7C919A;
+    --warn: #E4C05A; --lit: #6FA8C7;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 12px;
+    margin: 0; padding: 10px 12px 24px;
     background: var(--bg); color: var(--ink);
     font: 13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
   }
-  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .01em; }
-  .sub { color: var(--ink-dim); font-size: 11.5px; margin: 0 0 14px; }
 
-  section { background: var(--panel); border: 1px solid var(--line);
-            border-radius: 6px; padding: 10px 11px; margin-bottom: 10px; }
-  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-       color: var(--ink-dim); margin: 0 0 8px; font-weight: 600; }
+  /* ── header ─────────────────────────────────────────────────────────── */
+  .top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  h1 { font-size: 13px; margin: 0; letter-spacing: .01em; font-weight: 600; }
+  .sub { color: var(--ink-dim); font-size: 11px; margin: 0 0 10px; }
 
-  .row { display: flex; gap: 8px; align-items: baseline;
-         padding: 3px 0; border-top: 1px solid var(--line); }
-  .row:first-of-type { border-top: 0; }
-  .k { color: var(--ink-mid); flex: 0 0 42%; font-size: 12px; }
-  .v { flex: 1 1 auto; word-break: break-word; font-size: 12px;
-       font-family: ui-monospace, "SF Mono", Consolas, monospace; }
-  .v.ok   { color: var(--ok); }
-  .v.bad  { color: var(--bad); }
-  .v.warn { color: var(--warn); }
-  .v.idle { color: var(--idle); }
-
-  .big { font-size: 26px; font-family: ui-monospace, Consolas, monospace;
-         color: var(--ok); line-height: 1.1; }
-  .status {
-    display: flex; align-items: center; gap: 8px;
-    padding: 9px 11px; margin: 10px 0 14px;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: var(--panel); font-size: 13px;
+  select, input[type=text] {
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 7px; width: 100%;
   }
-  .status::before { content: "●"; font-size: 11px; }
-  .status--ok   { color: var(--ok); }
-  .status--bad  { color: var(--bad); }
-  .status--wait { color: var(--ink-dim); }
-
-  details { margin-bottom: 10px; }
-  summary { color: var(--ink-dim); font-size: 11.5px; cursor: pointer;
-            padding: 2px 0; }
-  summary:hover { color: var(--ink-mid); }
-
-  .hint { color: var(--ink-dim); font-size: 11.5px; margin: 8px 0 0; }
-  .hint code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
-  /* WHICH COPY AM I LOOKING AT. Two manifests are sideloaded side by side and
-     the panes are identical; without this, two reports can be transposed and
-     the whole comparison is silently wrong. */
-  #served-from { color: var(--warn); }
+  label.field { display: block; margin-bottom: 8px; }
+  label.field > span { display: block; color: var(--ink-dim); font-size: 11px;
+                       margin-bottom: 3px; }
 
   button {
     font: inherit; font-size: 12px; color: var(--ink);
     background: var(--card); border: 1px solid var(--line);
-    border-radius: 5px; padding: 7px 11px; cursor: pointer; margin-right: 6px;
+    border-radius: 5px; padding: 6px 10px; cursor: pointer;
   }
-  button:hover { background: #1A2C32; }
+  button:hover:not(:disabled) { background: var(--card-hover); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { border-color: #2C4A53; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
-  /* The clipboard API can be refused inside an embedded webview, so the report
-     is ALWAYS rendered here too — select-all and copy by hand always works. */
-  textarea {
-    width: 100%; height: 190px; margin-top: 9px; padding: 8px;
-    background: #0A1114; color: var(--ink-mid); border: 1px solid var(--line);
-    border-radius: 5px; font-family: ui-monospace, Consolas, monospace;
-    font-size: 11px; line-height: 1.4; resize: vertical;
+  .toggle { display: flex; align-items: center; gap: 6px;
+            color: var(--ink-mid); font-size: 11.5px; cursor: pointer; }
+
+  /* ── the one-line state ─────────────────────────────────────────────── */
+  .state {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 9px 11px; margin: 10px 0;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel); font-size: 12.5px; line-height: 1.4;
   }
+  .state::before { content: "●"; font-size: 10px; line-height: 1.6; }
+  .state--ok   { color: var(--supports); }
+  .state--bad  { color: var(--contradicts); }
+  .state--wait { color: var(--ink-dim); }
+  .state--warn { color: var(--warn); }
+  .state b { font-weight: 600; }
+  .state .act { margin-top: 6px; }
+
+  /* progress, for the indexing state */
+  .bar { height: 3px; background: var(--line-soft); border-radius: 2px;
+         margin-top: 7px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--supports); }
+
+  /* ── cards ──────────────────────────────────────────────────────────── */
+  .group { border: 1px solid var(--line); border-radius: 6px;
+           background: var(--panel); margin-bottom: 9px; overflow: hidden; }
+  .group-head { padding: 8px 10px 6px; border-bottom: 1px solid var(--line-soft); }
+  .ptitle { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
+  .pmeta { color: var(--ink-dim); font-size: 11px; margin-top: 2px; }
+
+  .card { padding: 8px 10px; border-top: 1px solid var(--line-soft); }
+  .card:first-of-type { border-top: 0; }
+  .passage { font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+  .passage.weak { color: var(--ink-mid); }
+
+  .chip { display: inline-block; font-size: 10.5px; padding: 1px 6px;
+          border-radius: 9px; border: 1px solid; margin-bottom: 5px; }
+  .chip--supports    { color: var(--supports);    border-color: #22584F; }
+  .chip--contradicts { color: var(--contradicts); border-color: #6B4A20; }
+  .chip--ambiguous   { color: var(--ambiguous);   border-color: #3A464B; }
+  .chip--not_relevant{ color: var(--ink-dim);     border-color: var(--line); }
+  .chip--none        { color: var(--ink-dim);     border-color: var(--line);
+                       border-style: dashed; }
+
+  button.inline-more { border: 0; background: none; padding: 0; color: var(--lit);
+                       font-size: 12px; text-decoration: underline; cursor: pointer; }
+  button.inline-more:hover { background: none; color: var(--ink); }
+
+  .flag { color: var(--warn); font-size: 11px; margin-top: 5px; }
+  .acts { margin-top: 7px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .acts button { font-size: 11px; padding: 3px 8px; }
+  .more { width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line-soft);
+          border-radius: 0; color: var(--ink-mid); font-size: 11.5px; padding: 7px 10px; }
+
+  /* ── literature ─────────────────────────────────────────────────────── */
+  details.lit { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  details.lit > summary { color: var(--lit); font-size: 12px; cursor: pointer; }
+  .note { color: var(--ink-dim); font-size: 11px; margin: 6px 0; line-height: 1.45; }
+  .lit-result { border: 1px solid var(--line); border-radius: 6px;
+                background: var(--panel); padding: 8px 10px; margin-bottom: 7px; }
+
+  .hint { color: var(--ink-dim); font-size: 11px; margin: 8px 0 0; }
+  details.diag { margin-top: 16px; }
+  details.diag > summary { color: var(--ink-dim); font-size: 11px; cursor: pointer; }
+  pre { white-space: pre-wrap; word-break: break-word; color: var(--ink-dim);
+        font: 11px/1.4 ui-monospace, Consolas, monospace; }
 </style>
 </head>
 <body>
 
-<h1>Standpoint</h1>
-<p class="sub">Reads your selection. Never writes to your document.
-  <span id="served-from"></span></p>
-<!-- ONE LINE A SCIENTIST CAN READ, above the diagnostics a developer needs.
-     The probe rows are what made this phase debuggable and are kept, but they
-     are not an answer to "is this working". -->
-<div id="status" class="status status--wait">Checking…</div>
+<div class="top"><h1>Standpoint</h1></div>
+<p class="sub">Reads your selection. Never writes to your document.</p>
 
-<details id="diagnostics">
-<summary>Diagnostics</summary>
+<label class="field">
+  <span>Searching against</span>
+  <select id="standpoint"></select>
+</label>
 
-<section>
-  <h2>1 · Environment</h2>
-  <div id="env"></div>
-</section>
+<div class="row">
+  <button id="find" class="primary">Find evidence</button>
+  <label class="toggle">
+    <input type="checkbox" id="live" checked>
+    <span>Live hints</span>
+  </label>
+</div>
 
-<section>
-  <h2>2 · Reaching Standpoint</h2>
-  <div id="net"></div>
-  <p class="hint">The first two are plaintext, the third is the same machine
-    over TLS, the fourth is this page asking itself and must always pass.
-    Compare rows 1–2 against row 3: if only the plaintext ones fail, the block
-    is about plaintext. If row 3 fails here but passes when this pane is served
-    from <code>127.0.0.1:8443</code>, the block is about reaching the local
-    machine from a public page. Watch the times too — a few milliseconds means
-    nothing was sent, and a hang means something is waiting on a permission.</p>
-  <button id="again">Run the probes again</button>
-</section>
+<div id="state" class="state state--wait">Checking…</div>
 
-<section>
-  <h2>3 · Selection</h2>
-  <div id="sel"></div>
-</section>
+<div id="results"></div>
 
-<section>
-  <h2>4 · Events while typing</h2>
-  <div class="row"><span class="k">selection changed</span><span class="v big" id="c-sel">0</span></div>
-  <div class="row"><span class="k">paragraph changed</span><span class="v big" id="c-par">0</span></div>
-  <div id="ev"></div>
-  <p class="hint">Click into a paragraph and type for about 20 seconds, then
-    read the gaps. Per-keystroke, per-word and per-paragraph look very
-    different here, and that difference is the whole decision.</p>
-</section>
+<details class="lit" id="lit-wrap">
+  <summary>Search for new papers</summary>
+  <div id="lit"></div>
+</details>
 
-<section>
-  <h2>5 · Report</h2>
-  <button id="copy">Copy report</button>
-  <button id="refresh">Rebuild report</button>
-  <div id="copied" class="hint"></div>
-  <textarea id="report" readonly spellcheck="false"></textarea>
-</section>
-
+<details class="diag">
+  <summary>Diagnostics</summary>
+  <pre id="diag"></pre>
 </details>
 
 <script src="taskpane.js"></script>
