@@ -63,6 +63,10 @@ function api(path, opts) {
     if (!r.ok) {
       var err = new Error('HTTP ' + r.status);
       err.status = r.status;
+      // Which route failed, so a 404 can be read as "this backend is older
+      // than the panel" rather than as a generic error. Only /addin/* and
+      // /write/* carry that meaning; a 404 elsewhere is an ordinary one.
+      err.addinRoute = path.indexOf('/addin/') === 0 || path.indexOf('/write/') === 0;
       throw err;
     }
     return r.status === 204 ? null : r.json();
@@ -324,7 +328,19 @@ function applyResult(res, query) {
 
 function handleError(err) {
   clear(byId('results'));
-  if (err && err.status) {
+  if (err && err.status === 404 && err.addinRoute) {
+    // A 404 on an /addin/* route means the BACKEND PREDATES THIS PANEL — the
+    // route simply does not exist in the running app. Saying "Standpoint isn't
+    // running" there is both wrong and unhelpful: it plainly is running, and
+    // the reader would go looking for a process that is already there.
+    //
+    // This happened in development and cost real confusion: a backend started
+    // 26 minutes before the endpoint was added served a healthy /addin/status
+    // and a 404 for /addin/standpoints, so the pane looked fine with an empty
+    // picker. One is fixed by STARTING the app, the other by RESTARTING it.
+    setState('warn', 'This Standpoint is older than the panel. Restart '
+      + 'Standpoint — or update it, if restarting does not help.');
+  } else if (err && err.status) {
     setState('bad', 'Standpoint replied with an error (HTTP ' + err.status + ').');
   } else {
     // A failed fetch from a pane that LOADED means the app stopped — not that

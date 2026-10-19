@@ -132,6 +132,11 @@ index to see one message is how they end up never reviewed.
 
 ### Trusting the dev certificate in Chrome on Linux
 
+**Skip this unless you are using Word on the web.** Browser test mode above
+runs on the plain door (`http://…:8000`) and needs no certificate at all. The
+certificate exists because *Word* refuses a plain-http pane; Chrome does not
+care.
+
 Only needed for the **https** door (`:8443`), which is what Word on the web
 loads. Chrome on Linux uses its own NSS store, not the system one:
 
