@@ -132,35 +132,66 @@ index to see one message is how they end up never reviewed.
 
 ### Trusting the dev certificate in Chrome on Linux
 
-**Skip this unless you are using Word on the web.** Browser test mode above
-runs on the plain door (`http://…:8000`) and needs no certificate at all. The
+**Skip this unless you are using Word on the web.** Browser test mode above runs
+on the plain door (`http://…:8000`) and needs no certificate at all. The
 certificate exists because *Word* refuses a plain-http pane; Chrome does not
 care.
 
-Only needed for the **https** door (`:8443`), which is what Word on the web
-loads. Chrome on Linux uses its own NSS store, not the system one:
+Chrome on Linux uses its own NSS store, not the system one:
 
 ```sh
-certutil -d sql:$HOME/.pki/nssdb -A -t "C,," \
+certutil -d sql:$HOME/.pki/nssdb -A -t "P,," \
   -n "Standpoint.Bio dev" -i backend/addin-cert.pem
 ```
 
-`-t "C,,"` trusts it for TLS servers only. The certificate is a CA with
-`localhost`, `127.0.0.1` and `::1` in its SAN, generated per machine; the
-private key never leaves it. Needs `libnss3-tools` (`certutil` is already on
-this machine). **Restart Chrome afterwards.** To undo:
+**`-t "P,,"` — a trusted PEER, not a trusted CA.** This matters. The flag says
+"trust this exact certificate to identify a server", where the old `"C,,"` said
+"trust this certificate to VOUCH FOR OTHERS". Standpoint's certificate is no
+longer a certificate authority (`CA:FALSE`, no `keyCertSign`), so it cannot sign
+for anything and `"C,,"` would be both wrong and dangerous.
 
-```sh
-certutil -d sql:$HOME/.pki/nssdb -D -n "Standpoint.Bio dev"
-```
+> **If you previously ran the `"C,,"` version, remove it first.** That entry
+> trusted an issuer, and the old certificate could sign a valid certificate for
+> any website — demonstrated: a `mybank.com` certificate signed with
+> `addin-key.pem` verified against it. Removing by name removes whichever is
+> there:
+>
+> ```sh
+> certutil -d sql:$HOME/.pki/nssdb -D -n "Standpoint.Bio dev"
+> ```
 
-Check it took:
+**Restart Chrome afterwards**, then check it took:
 
 ```sh
 curl https://127.0.0.1:8443/health      # no -k; a 200 means the system trusts it
 ```
 
-### Word on the web
+Needs `libnss3-tools`. To remove: the `-D` command above.
+
+### What the certificate can and cannot do
+
+| | |
+| --- | --- |
+| vouch for `localhost`, `127.0.0.1`, `::1` | yes — that is its whole job |
+| vouch for any other name | **no** — they are not in it |
+| sign a certificate for another website | **no** — `CA:FALSE`, no `keyCertSign` |
+| be read by other accounts on the machine | **no** — the key is `0600` (an ACL on Windows) |
+
+A **leaf** certificate was chosen over a CA carrying a critical
+`nameConstraints` extension. A leaf cannot sign anything at all: the capability
+is absent rather than restricted, where a constraint has to be honoured by
+whatever is doing the checking, and enforcement has varied across platforms and
+versions. A defence that depends on the victim's implementation being correct is
+weaker than one that removes the power. All three stores accept a self-signed
+leaf trusted directly.
+
+**Uninstall removes the trust**, not just the files — a trusted certificate
+whose file is gone is still trusted. On Windows the uninstaller does it. **A
+macOS `.dmg` has no uninstaller at all**, so use **Settings ▸ Word add-in ▸
+Remove the certificate** before dragging the app to the Trash; on Linux, the
+`-D` command above.
+
+### Word on the web### Word on the web
 
 Word on the web runs in Chrome on Linux, and is the only Word available here.
 `manifest-local.xml` is an XML manifest with an `https` SourceLocation, which is
