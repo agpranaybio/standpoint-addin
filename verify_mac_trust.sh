@@ -93,14 +93,27 @@ echo "$AFTER" | grep -q '"trust_state": *"trusted"' \
   || bad "trust_state is $(echo "$AFTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["trust_state"])' 2>/dev/null)"
 
 step "7. macOS really trusts it (not just our record)"
-# The honest check: ask the system, not ourselves. `trust_state` only says the
-# app believes it succeeded.
-if curl -s -o /dev/null --max-time 5 https://127.0.0.1:8443/health; then
-  ok "curl accepts the certificate WITHOUT -k — the system trusts it"
+# ASK macOS, NOT curl. `trust_state` only says the app believes it succeeded,
+# and curl is the wrong witness: modern macOS ships it built against LibreSSL,
+# which does not consult the keychain at all. The earlier version of this step
+# used `curl` and would have reported "the keychain entry did not take" to a
+# tester whose keychain was perfectly fine. security(1) asks the system's own
+# trust evaluation, which is the thing WKWebView also asks.
+if security verify-cert -c "$CERT" >/dev/null 2>&1; then
+  ok "macOS trust evaluation accepts the certificate"
 else
-  bad "curl still rejects it — the keychain entry did not take"
-  note "If this fails but the pane works anyway, say so: it would mean the"
-  note "login keychain satisfies WKWebView but not the CLI's trust store."
+  bad "macOS does not trust the certificate — the keychain entry did not take"
+  note "Re-run the trust step in Settings, and say whether a password prompt"
+  note "appeared. The pane will be BLANK until this passes, with no error."
+fi
+
+# Independent of any trust store: does the certificate match what the server
+# actually presents? A mismatch here means the backend is serving an older
+# certificate than the file you trusted — restart Standpoint.
+if curl -s -o /dev/null --max-time 5 --cacert "$CERT" https://127.0.0.1:8443/health; then
+  ok "the served certificate matches the file (restart not needed)"
+else
+  bad "the server is NOT presenting this certificate — restart Standpoint"
 fi
 
 step "8. Sideload the pane and open it in Word"

@@ -160,11 +160,31 @@ for anything and `"C,,"` would be both wrong and dangerous.
 > certutil -d sql:$HOME/.pki/nssdb -D -n "Standpoint.Bio dev"
 > ```
 
-**Restart Chrome afterwards**, then check it took:
+**Restart Chrome afterwards.**
+
+**Checking it took — and asking the right thing.** `curl` does NOT read
+Chrome's store; it uses the system CA bundle, a completely separate list. A
+plain `curl https://127.0.0.1:8443/health` therefore proves nothing about
+Chrome either way, and its failure is not evidence that the trust did not work.
+(That instruction was here, it was wrong, and it cost a debugging session.)
 
 ```sh
-curl https://127.0.0.1:8443/health      # no -k; a 200 means the system trusts it
+# 1. Is the certificate in CHROME's store?
+certutil -d sql:$HOME/.pki/nssdb -L -n "Standpoint.Bio dev"
+
+# 2. Do the certificate and the server agree? (independent of every store)
+curl --cacert backend/addin-cert.pem https://127.0.0.1:8443/health
 ```
+
+**The only real test of Chrome is Chrome.** Open
+
+```
+https://127.0.0.1:8443/addin/taskpane.html
+```
+
+and look for a warning. The two commands above rule out the common failures —
+the entry missing, or the server presenting a different certificate than the
+file — but neither can prove the browser will accept it.
 
 Needs `libnss3-tools`. To remove: the `-D` command above.
 
